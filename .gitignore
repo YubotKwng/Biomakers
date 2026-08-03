@@ -1,0 +1,10 @@
+results/*
+!results/.gitkeep
+/data/
+__pycache__/
+*.pyc
+CONTEXT_AND_STRUCTURE.md
+.vscode/settings.json
+notebooks/paper_reproduction.ipynb
+notebooks/paper_reproduction_trackfa_pairs.ipynb
+notebooks/paper_reproduction_trackfa.ipynb

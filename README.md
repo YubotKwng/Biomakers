@@ -1,4 +1,4 @@
-# Refactored baseline pipeline
+# baseline pipeline
 
 Bit-exact refactor of the four notebooks under `../notebooks/` into a clean
 `src/` package with thin orchestration notebooks under `notebooks/`.
