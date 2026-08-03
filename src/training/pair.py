@@ -10,17 +10,18 @@ import torch.nn.functional as F
 from sklearn.preprocessing import StandardScaler
 
 from ..data.qc import filter_complete_pairs
+from ..data.model_safety import assert_no_control_rows, assert_no_clinical_score_features
 from ..eval.cv import split_train_val_subjects
 from ..models.pair import PairModel
 
 
-def prepare_pair_arrays(df, feature_cols, scaler, *, subject_col, device):
-    """Build paired-tensor inputs (visit-1 and visit-2 features per
-    subject) plus FARS / SARA per visit.
+def prepare_pair_arrays(df, feature_cols, scaler, *, subject_col, device, include_clinical_targets=False):
+    """Build paired-tensor inputs (visit-1 and visit-2 features per subject).
 
-    Returns tensors for baseline/follow-up features, clinical targets, and
-    paired subject identifiers.
+    Clinical target tensors are zero-filled unless explicitly requested.
     """
+    assert_no_control_rows(df)
+    assert_no_clinical_score_features(feature_cols)
     x1_list, x2_list, sids = [], [], []
     for sid, g in df.groupby(subject_col):
         g = g.sort_values('visit')
@@ -34,10 +35,16 @@ def prepare_pair_arrays(df, feature_cols, scaler, *, subject_col, device):
             sids.append(sid)
     X1 = torch.tensor(scaler.transform(np.vstack(x1_list)), dtype=torch.float32, device=device)
     X2 = torch.tensor(scaler.transform(np.vstack(x2_list)), dtype=torch.float32, device=device)
-    F1 = np.array([df[df[subject_col] == sid].sort_values("visit")["FARS"].iloc[0] for sid in sids], dtype=float)
-    F2 = np.array([df[df[subject_col] == sid].sort_values("visit")["FARS"].iloc[1] for sid in sids], dtype=float)
-    S1 = np.array([df[df[subject_col] == sid].sort_values("visit")["SARA"].iloc[0] for sid in sids], dtype=float)
-    S2 = np.array([df[df[subject_col] == sid].sort_values("visit")["SARA"].iloc[1] for sid in sids], dtype=float)
+    if include_clinical_targets:
+        F1 = np.array([df[df[subject_col] == sid].sort_values("visit")["FARS"].iloc[0] for sid in sids], dtype=float)
+        F2 = np.array([df[df[subject_col] == sid].sort_values("visit")["FARS"].iloc[1] for sid in sids], dtype=float)
+        S1 = np.array([df[df[subject_col] == sid].sort_values("visit")["SARA"].iloc[0] for sid in sids], dtype=float)
+        S2 = np.array([df[df[subject_col] == sid].sort_values("visit")["SARA"].iloc[1] for sid in sids], dtype=float)
+    else:
+        F1 = np.zeros((len(sids),), dtype=float)
+        F2 = np.zeros((len(sids),), dtype=float)
+        S1 = np.zeros((len(sids),), dtype=float)
+        S2 = np.zeros((len(sids),), dtype=float)
     F1 = torch.tensor(F1.reshape(-1, 1), dtype=torch.float32, device=device)
     F2 = torch.tensor(F2.reshape(-1, 1), dtype=torch.float32, device=device)
     S1 = torch.tensor(S1.reshape(-1, 1), dtype=torch.float32, device=device)
@@ -59,7 +66,7 @@ def train_pair_model(
     dropout=0.2,
     val_fraction=0.2,
     seed=42,
-    use_clinical_heads=True,
+    use_clinical_heads=False,
     lambda_prog=1.0,
     lambda_fars=1.0,
     lambda_sara=1.0,
@@ -67,16 +74,23 @@ def train_pair_model(
     """Train ``PairModel`` with subject-level early stopping.
 
     Uses subject-level validation for early stopping and optimizes paired
-    progression sensitivity with optional clinical auxiliary heads.
+    progression sensitivity. Clinical auxiliary heads are disabled by default
+    because clinical scores must not be used during model training.
     """
+    if use_clinical_heads:
+        raise ValueError("Clinical auxiliary heads use FARS/SARA during training and are disabled by policy.")
+    assert_no_control_rows(train_df)
+    assert_no_clinical_score_features(feature_cols)
     train_split, val_split = split_train_val_subjects(
         train_df, subject_col, val_fraction=val_fraction, seed=seed
     )
     X1_train, X2_train, sid_train, F1_train, F2_train, S1_train, S2_train = prepare_pair_arrays(
         train_split, feature_cols, scaler, subject_col=subject_col, device=device,
+        include_clinical_targets=use_clinical_heads,
     )
     X1_val, X2_val, sid_val, F1_val, F2_val, S1_val, S2_val = prepare_pair_arrays(
         val_split, feature_cols, scaler, subject_col=subject_col, device=device,
+        include_clinical_targets=use_clinical_heads,
     )
 
     model = PairModel(X1_train.shape[1], dropout=dropout).to(device)

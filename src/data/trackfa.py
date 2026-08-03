@@ -18,6 +18,7 @@ import pandas as pd
 
 from ..config import Config, DEFAULT_CONFIG
 from .ids import std_col
+from .model_safety import assert_no_control_rows, drop_control_rows
 
 
 EVENT_ORDER = {
@@ -789,8 +790,10 @@ def run_merge(
     redcap_wide = drop_trackfa_clinical_metadata_columns(redcap_wide)
     redcap_wide = select_trackfa_clinical_features(redcap_wide)
 
-    # FRDA only, 174 subjects.
+    # FRDA only: keep raw controls separated from all downstream modelling tables.
+    redcap_wide = drop_control_rows(redcap_wide)
     redcap_wide = redcap_wide[redcap_wide["study_group"] == 0].copy()
+    assert_no_control_rows(redcap_wide)
     redcap_wide["subject_id"] = redcap_wide["ID"].apply(_strip_trackfa_prefix)
 
     # --- Imaging: load all sheets, normalize into long (participant_id, visit) ---
@@ -1071,6 +1074,8 @@ def run_merge(
         raise AssertionError(
             f"trackfa_long expected 174 unique subjects, got {long_df['subject_id'].nunique()}"
         )
+    assert_no_control_rows(long_df)
+    assert_no_control_rows(pairs_df)
     if pairs_df.shape[1] != 464:
         raise AssertionError(f"trackfa_pairs expected 464 columns, got {pairs_df.shape[1]}")
     # Pair label lives in patient_id suffix.

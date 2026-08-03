@@ -17,6 +17,7 @@ from sklearn.linear_model import ElasticNet
 from sklearn.preprocessing import StandardScaler
 
 from ..data.qc import tukey_outliers_mask
+from ..data.model_safety import assert_training_frame_is_patient_only
 
 
 def bootstrap_importance(
@@ -45,6 +46,7 @@ def bootstrap_importance(
     feature_cols: list[str] = []
     for domain in combo["domains"]:
         feature_cols.extend(domain)
+    assert_training_frame_is_patient_only(df, feature_cols, target_col=target_col)
 
     sub = df.dropna(subset=feature_cols + [target_col]).copy()
     sub = sub[~tukey_outliers_mask(sub, feature_cols, k=3.0)].copy()

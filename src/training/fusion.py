@@ -16,24 +16,32 @@ import torch.nn.functional as F
 from sklearn.preprocessing import StandardScaler
 
 from ..data.qc import filter_complete_pairs
+from ..data.model_safety import assert_no_control_rows, assert_no_clinical_score_features
 from ..eval.cv import split_train_val_subjects
 from ..models.fusion import FusionModel
 from .loss import paired_progression_loss
 
 
-def prepare_fusion_arrays(df, feature_cols, meta, scaler, *, subject_col, device):
+def prepare_fusion_arrays(df, feature_cols, meta, scaler, *, subject_col, device, include_clinical_targets=False):
     """Build per-modality torch tensors + bookkeeping arrays.
 
-    Returns tensors for modality branches, clinical targets, visit labels, and
-    subject identifiers.
+    Clinical target tensors are zero-filled unless explicitly requested.
     """
+    assert_no_control_rows(df)
+    assert_no_clinical_score_features(feature_cols)
     X = scaler.transform(df[feature_cols].values)
+    if include_clinical_targets:
+        fars = df['FARS'].values.reshape(-1, 1)
+        sara = df['SARA'].values.reshape(-1, 1)
+    else:
+        fars = np.zeros((len(df), 1), dtype=float)
+        sara = np.zeros((len(df), 1), dtype=float)
     arrays = {
         'struct': torch.tensor(X[:, meta['struct_idx']], dtype=torch.float32, device=device),
         'diff': torch.tensor(X[:, meta['diff_idx']], dtype=torch.float32, device=device),
         'back': torch.tensor(X[:, meta['back_idx']], dtype=torch.float32, device=device),
-        'fars': torch.tensor(df['FARS'].values.reshape(-1, 1), dtype=torch.float32, device=device),
-        'sara': torch.tensor(df['SARA'].values.reshape(-1, 1), dtype=torch.float32, device=device),
+        'fars': torch.tensor(fars, dtype=torch.float32, device=device),
+        'sara': torch.tensor(sara, dtype=torch.float32, device=device),
         'visit': np.array(df['visit'].values),
         'subject': np.array(df[subject_col].values),
     }
@@ -44,7 +52,7 @@ def evaluate_fusion_loss(
     model,
     arrays,
     *,
-    use_clinical_heads=True,
+    use_clinical_heads=False,
     lambda_prog=1.0,
     lambda_fars=1.0,
     lambda_sara=1.0,
@@ -81,26 +89,32 @@ def train_fusion_model(
     dropout=0.2,
     val_fraction=0.2,
     seed=42,
-    use_clinical_heads=True,
+    use_clinical_heads=False,
     lambda_prog=1.0,
     lambda_fars=1.0,
     lambda_sara=1.0,
 ):
     """LOO-fold training loop with subject-level validation early stopping.
 
-    Returns tensors for modality branches, clinical targets, visit labels, and
-    subject identifiers.
+    Clinical auxiliary heads are disabled by default because clinical scores
+    must not be used during model training.
     """
+    if use_clinical_heads:
+        raise ValueError("Clinical auxiliary heads use FARS/SARA during training and are disabled by policy.")
+    assert_no_control_rows(train_df)
+    assert_no_clinical_score_features(feature_cols)
     train_split, val_split = split_train_val_subjects(
         train_df, subject_col, val_fraction=val_fraction, seed=seed
     )
     train_arrays = prepare_fusion_arrays(
         train_split, feature_cols, meta, scaler,
         subject_col=subject_col, device=device,
+        include_clinical_targets=use_clinical_heads,
     )
     val_arrays = prepare_fusion_arrays(
         val_split, feature_cols, meta, scaler,
         subject_col=subject_col, device=device,
+        include_clinical_targets=use_clinical_heads,
     )
 
     dims = {

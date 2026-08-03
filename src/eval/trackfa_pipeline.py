@@ -27,6 +27,12 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.exceptions import ConvergenceWarning
 
 from ..config import Config, DEFAULT_CONFIG
+from ..data.model_safety import (
+    assert_no_clinical_score_target,
+    assert_training_frame_is_patient_only,
+    clinical_score_columns,
+    drop_control_rows,
+)
 from .metrics import compute_cohens_d
 
 
@@ -108,6 +114,7 @@ def _infer_imaging_bases(wide_df: pd.DataFrame) -> list[str]:
         return False
 
     imaging = [b for b in bases if not is_non_imaging(b)]
+    imaging = [b for b in imaging if not clinical_score_columns([b])]
     return sorted(imaging)
 
 
@@ -136,6 +143,7 @@ def build_trackfa_pairs_from_wide(
     if subject_col not in wide_df.columns:
         raise KeyError(f"wide_df missing subject column {subject_col!r}")
 
+    wide_df = drop_control_rows(wide_df)
     imaging_bases = _infer_imaging_bases(wide_df)
     if not imaging_bases:
         raise ValueError("Could not infer imaging feature bases from wide_df.")
@@ -290,6 +298,7 @@ def select_features_aic_bic(
     AIC = -2*log(L) + 2k,  BIC = -2*log(L) + k*log(n).
     Return ranked list of selected imaging feature base names.
     """
+    assert_no_clinical_score_target(target_col)
     if target_col not in pairs_df.columns:
         raise KeyError(f"Missing target column: {target_col}")
 
@@ -370,6 +379,7 @@ def select_features_entropy(
     Use sklearn mutual_info_regression on delta_* columns.
     Return top-k feature base names.
     """
+    assert_no_clinical_score_target(target_col)
     if target_col not in pairs_df.columns:
         raise KeyError(f"Missing target column: {target_col}")
 
@@ -422,6 +432,7 @@ def subject_loo_cv(
     pair_type: str | None = None,
     *,
     subject_col: str = "ID",
+    allow_clinical_target: bool = False,
 ) -> dict:
     """
     Subject-level Leave-One-Out cross-validation.
@@ -466,6 +477,14 @@ def subject_loo_cv(
     missing = [c for c in feature_cols if c not in work.columns]
     if missing:
         raise KeyError(f"Missing feature columns: {missing[:5]}{'...' if len(missing) > 5 else ''}")
+
+    target_for_guard = "delta_mfars_total" if model_type == "elasticnet" else None
+    assert_training_frame_is_patient_only(
+        work,
+        feature_cols,
+        target_col=target_for_guard,
+        allow_clinical_target=allow_clinical_target,
+    )
 
     X = work[feature_cols].replace([np.inf, -np.inf], np.nan)
     groups = work[subject_col].to_numpy()
@@ -553,6 +572,9 @@ def subject_loo_cv(
 def run_feature_group_experiments(
     pairs_df: pd.DataFrame,
     selected_features: list[str],
+    *,
+    model_types: tuple[str, ...] = ("lda",),
+    allow_clinical_target: bool = False,
 ) -> pd.DataFrame:
     """LOO-CV across feature group × model × pair_type combinations.
 
@@ -586,11 +608,17 @@ def run_feature_group_experiments(
 
     rows: list[dict[str, Any]] = []
     for feature_group, cols in groups.items():
-        for model in ("lda", "elasticnet"):
+        for model in model_types:
             for pair_type in ("V1V2", "V2V3", "both"):
                 pt = None if pair_type == "both" else pair_type
                 try:
-                    res = subject_loo_cv(pairs_df, cols, model_type=model, pair_type=pt)
+                    res = subject_loo_cv(
+                        pairs_df,
+                        cols,
+                        model_type=model,
+                        pair_type=pt,
+                        allow_clinical_target=allow_clinical_target,
+                    )
                     d = float(res["cohens_d"])
                     n = int(res["n_pairs"])
                 except Exception:

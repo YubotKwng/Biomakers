@@ -1,6 +1,8 @@
 results/*
 !results/.gitkeep
 /data/
+!src/data/
+!src/data/**
 __pycache__/
 *.pyc
 CONTEXT_AND_STRUCTURE.md

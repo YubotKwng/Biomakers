@@ -90,22 +90,16 @@ def make_selection_fn(
     """Return a training-fold feature selector.
 
     The closure recomputes MI rankings on the training fold only. ``task`` is
-    one of ``{'lda_visit', 'reg_fars1', 'reg_dfars'}``; ``selection_mode`` is
-    one of ``{'entropy_topk_global', 'entropy_topk_group'}``.
+    ``'lda_visit'``; clinical-score regression selectors are disabled so
+    clinical scores cannot become model-training targets.
     """
     k_selected = int(k_selected)
+    if task != "lda_visit":
+        raise ValueError("Only lda_visit feature selection is allowed; clinical-score targets are disabled.")
 
     def select_for_train(train_df: pd.DataFrame) -> List[str]:
-        # train_df is either long_df (for lda) or baseline/delta df (for regression)
-        if task == "lda_visit":
-            y = (train_df["visit"].values == 2).astype(int)
-            mi_rank = rank_features_by_mi(train_df, all_features, y, mi_kind="mi_visit")
-        elif task == "reg_fars1":
-            y = train_df["FARS1"].values
-            mi_rank = rank_features_by_mi(train_df, all_features, y, mi_kind="mi_reg")
-        else:
-            y = train_df["dFARS"].values
-            mi_rank = rank_features_by_mi(train_df, all_features, y, mi_kind="mi_reg")
+        y = (train_df["visit"].values == 2).astype(int)
+        mi_rank = rank_features_by_mi(train_df, all_features, y, mi_kind="mi_visit")
 
         if selection_mode == "entropy_topk_global":
             return select_topk_global(mi_rank, k_selected)

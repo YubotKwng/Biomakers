@@ -14,6 +14,7 @@ from sklearn.preprocessing import StandardScaler
 
 from .metrics import compute_cohens_d_from_oof
 from ..data.qc import _as_float_array, standardize_train_test, tukey_outliers_mask
+from ..data.model_safety import assert_training_frame_is_patient_only
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +131,7 @@ def run_cv_for_combination(
     feature_cols: list[str] = []
     for domain in combo["domains"]:
         feature_cols.extend(domain)
+    assert_training_frame_is_patient_only(df, feature_cols, target_col=target_col)
 
     sub = df.dropna(subset=feature_cols + [target_col]).copy()
     n_before = len(sub)
@@ -233,6 +235,7 @@ def run_cv_loocv_with_coefs(
     if reg_strengths is None:
         reg_strengths = np.linspace(0, 20, 201)
 
+    assert_training_frame_is_patient_only(df_long, feature_cols, target_col=target_col)
     sub = df_long.dropna(subset=list(feature_cols) + [target_col]).copy()
     sub = sub[~tukey_outliers_mask(sub, feature_cols, k=3.0)].copy()
 
@@ -305,6 +308,7 @@ def select_params_by_inner_cv_d(
     if alphas is None:
         alphas = np.logspace(-2, 2, 10)
 
+    assert_training_frame_is_patient_only(df_long_train, feature_cols, target_col=target_col)
     sub = df_long_train.dropna(subset=list(feature_cols) + [target_col]).copy()
     sub = sub[~tukey_outliers_mask(sub, feature_cols, k=3.0)].copy()
     if len(sub) == 0:
@@ -400,6 +404,7 @@ def run_loocv_d_tuned_with_coefs(
     if alphas is None:
         alphas = np.logspace(-2, 2, 10)
 
+    assert_training_frame_is_patient_only(df_long, feature_cols, target_col=target_col)
     sub = df_long.dropna(subset=list(feature_cols) + [target_col]).copy()
     sub = sub[~tukey_outliers_mask(sub, feature_cols, k=3.0)].copy()
 
@@ -562,6 +567,7 @@ def lda_loocv(
             "d_ci_low": np.nan,
             "d_ci_high": np.nan,
         }
+    assert_training_frame_is_patient_only(df_long_in, feats_present)
     sub = df_long_in[[subject_col, visit_col] + feats_present].dropna().copy()
     counts = sub.groupby(subject_col)[visit_col].nunique()
     valid_subjects = counts[counts == 2].index
@@ -653,6 +659,7 @@ def tune_and_run_regression_loocv(
             "rmse": np.nan,
             "r2": np.nan,
         }
+    assert_training_frame_is_patient_only(df, feats_present, target_col=target_col)
     sub = df[[subject_col, target_col] + feats_present].dropna().copy()
     subjects = sub[subject_col].unique()
 
