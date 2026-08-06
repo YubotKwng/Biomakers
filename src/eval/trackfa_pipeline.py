@@ -106,6 +106,7 @@ def _infer_imaging_bases(wide_df: pd.DataFrame) -> list[str]:
     )
 
     def is_non_imaging(b: str) -> bool:
+        """Return True for clinical, demographic, and administrative bases."""
         if b in CLINICAL_SCORES:
             return True
         for p in _NON_IMAGING_BASE_PREFIXES:

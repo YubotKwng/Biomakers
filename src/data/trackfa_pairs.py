@@ -142,6 +142,7 @@ class TrackfaFeatureGroups:
 
     @property
     def all_neuroimaging(self) -> List[str]:
+        """All MRI-derived features, excluding background and clinical scores."""
         return sorted(set(self.poms + self.brainspinemorph + self.braindti))
 
 
@@ -204,25 +205,9 @@ def infer_trackfa_feature_groups(pairs_df: pd.DataFrame) -> TrackfaFeatureGroups
 
 
 def build_trackfa_combinations(groups: TrackfaFeatureGroups) -> List[Dict]:
-    """Return paper-style feature combinations for TRACK-FA."""
-    bg = list(groups.background)
-    poms = list(groups.poms)
-    morph = list(groups.brainspinemorph)
-    dti = list(groups.braindti)
+    """Return the single all-imaging feature specification for TRACK-FA."""
     all_img = list(groups.all_neuroimaging)
-
-    combos = [
-        {"name": "background_only", "domains": [bg], "skip": False},
-        {"name": "poms_only", "domains": [poms], "skip": False},
-        {"name": "brainspinemorph_only", "domains": [morph], "skip": False},
-        {"name": "braindti_only", "domains": [dti], "skip": False},
-        {"name": "all_neuroimaging", "domains": [all_img], "skip": False},
-        {"name": "background_poms", "domains": [bg, poms], "skip": False},
-        {"name": "background_brainspinemorph", "domains": [bg, morph], "skip": False},
-        {"name": "background_braindti", "domains": [bg, dti], "skip": False},
-        {"name": "background_all_neuroimaging", "domains": [bg, all_img], "skip": False},
-    ]
-    return combos
+    return [{"name": "all_imaging", "domains": [all_img], "skip": False}]
 
 
 __all__ = [

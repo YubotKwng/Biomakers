@@ -24,6 +24,8 @@ def prepare_pair_arrays(df, feature_cols, scaler, *, subject_col, device, includ
     assert_no_clinical_score_features(feature_cols)
     x1_list, x2_list, sids = [], [], []
     for sid, g in df.groupby(subject_col):
+        # PairModel needs exactly one baseline and one follow-up row per
+        # interval/subject key so progression is well-defined.
         g = g.sort_values('visit')
         if g['visit'].nunique() != 2:
             continue
@@ -33,6 +35,7 @@ def prepare_pair_arrays(df, feature_cols, scaler, *, subject_col, device, includ
             x1_list.append(x1.ravel())
             x2_list.append(x2.ravel())
             sids.append(sid)
+    # The scaler is fit outside this helper on the current training fold.
     X1 = torch.tensor(scaler.transform(np.vstack(x1_list)), dtype=torch.float32, device=device)
     X2 = torch.tensor(scaler.transform(np.vstack(x2_list)), dtype=torch.float32, device=device)
     if include_clinical_targets:
@@ -58,6 +61,7 @@ def train_pair_model(
     scaler,
     *,
     subject_col,
+    split_group_col=None,
     device,
     epochs=20,
     patience=4,
@@ -68,8 +72,8 @@ def train_pair_model(
     seed=42,
     use_clinical_heads=False,
     lambda_prog=1.0,
-    lambda_fars=1.0,
-    lambda_sara=1.0,
+    lambda_fars=0.0,
+    lambda_sara=0.0,
 ):
     """Train ``PairModel`` with subject-level early stopping.
 
@@ -79,10 +83,19 @@ def train_pair_model(
     """
     if use_clinical_heads:
         raise ValueError("Clinical auxiliary heads use FARS/SARA during training and are disabled by policy.")
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
     assert_no_control_rows(train_df)
     assert_no_clinical_score_features(feature_cols)
+    # Validation is selected from the current training fold only; it is used
+    # for early stopping, not for final OOF evaluation.
     train_split, val_split = split_train_val_subjects(
-        train_df, subject_col, val_fraction=val_fraction, seed=seed
+        train_df,
+        subject_col,
+        val_fraction=val_fraction,
+        seed=seed,
+        split_group_col=split_group_col,
     )
     X1_train, X2_train, sid_train, F1_train, F2_train, S1_train, S2_train = prepare_pair_arrays(
         train_split, feature_cols, scaler, subject_col=subject_col, device=device,
@@ -105,6 +118,8 @@ def train_pair_model(
         model.train()
         opt.zero_grad()
         prog, _, _, _, _ = model(X1_train, X2_train)
+        # Optimise negative SRM: maximising mean(progression)/sd(progression)
+        # across training pairs while keeping the model unsupervised by clinic.
         train_loss = -(prog.mean() / (prog.std(unbiased=True) + 1e-6))
         train_loss.backward()
         opt.step()
@@ -122,6 +137,8 @@ def train_pair_model(
             val_loss = lambda_prog * prog_loss_v + lambda_fars * loss_fars_v + lambda_sara * loss_sara_v
         val_value = float(val_loss.item())
 
+        # Select the checkpoint with the strongest validation progression
+        # objective, again without clinical-score losses by default.
         if val_value < best_val:
             best_val = val_value
             best_state = copy.deepcopy(model.state_dict())
@@ -150,6 +167,7 @@ class _PairProgWrapper(nn.Module):
         self.model = model
 
     def forward(self, x1, x2):
+        """Forward paired visits and keep only the progression output."""
         return self.model(x1, x2)[0]
 
 

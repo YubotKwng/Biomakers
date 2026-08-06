@@ -8,6 +8,18 @@ import torch.nn as nn
 from .mlp import MLPEncoder
 
 
+class ZeroEncoder(nn.Module):
+    """Return a zero latent vector for absent modalities."""
+
+    def __init__(self, out_dim):
+        super().__init__()
+        self.out_dim = int(out_dim)
+
+    def forward(self, x):
+        """Return a latent zero block matching the current batch size."""
+        return x.new_zeros((x.shape[0], self.out_dim))
+
+
 class FusionModel(nn.Module):
     """Three-branch fusion MLP (struct + diff + back) with FARS / SARA /
     progression heads.
@@ -18,9 +30,18 @@ class FusionModel(nn.Module):
 
     def __init__(self, dims, dropout=0.3):
         super().__init__()
-        self.enc_struct = MLPEncoder(dims['struct'], hidden=8, out_dim=4, dropout=dropout)
-        self.enc_diff = MLPEncoder(dims['diff'], hidden=8, out_dim=4, dropout=dropout)
-        self.enc_back = MLPEncoder(dims['back'], hidden=4, out_dim=2, dropout=dropout)
+        self.enc_struct = (
+            MLPEncoder(dims['struct'], hidden=8, out_dim=4, dropout=dropout)
+            if int(dims['struct']) > 0 else ZeroEncoder(out_dim=4)
+        )
+        self.enc_diff = (
+            MLPEncoder(dims['diff'], hidden=8, out_dim=4, dropout=dropout)
+            if int(dims['diff']) > 0 else ZeroEncoder(out_dim=4)
+        )
+        self.enc_back = (
+            MLPEncoder(dims['back'], hidden=4, out_dim=2, dropout=dropout)
+            if int(dims['back']) > 0 else ZeroEncoder(out_dim=2)
+        )
 
         fused_dim = 4 + 4 + 2
         self.head = nn.Sequential(
@@ -31,6 +52,7 @@ class FusionModel(nn.Module):
         self.prog = nn.Linear(4, 1)
 
     def forward(self, x_struct, x_diff, x_back):
+        """Encode modalities, fuse them, and return FARS, SARA, progression."""
         h = torch.cat([
             self.enc_struct(x_struct),
             self.enc_diff(x_diff),
@@ -43,4 +65,4 @@ class FusionModel(nn.Module):
         return fars, sara, prog
 
 
-__all__ = ["FusionModel"]
+__all__ = ["FusionModel", "ZeroEncoder"]

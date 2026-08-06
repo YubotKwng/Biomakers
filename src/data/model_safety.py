@@ -37,10 +37,12 @@ CLINICAL_SCORE_BASES = {
 
 
 def _normalise_token(value: Any) -> str:
+    """Normalise free-text labels before leakage/control matching."""
     return str(value).strip().lower().replace("-", "_")
 
 
 def _strip_model_suffixes(name: str) -> str:
+    """Remove visit/delta suffixes so clinical score families are recognised."""
     s = str(name).strip()
     if s.startswith("delta_"):
         s = s[len("delta_") :]
@@ -126,7 +128,12 @@ def assert_training_frame_is_patient_only(
     target_col: str | None = None,
     allow_clinical_target: bool = False,
 ) -> None:
-    """Validate the two leakage rules before fitting a model."""
+    """Validate the two leakage rules before fitting a model.
+
+    The progression models should learn from patient imaging rows only.
+    Clinical scores are reserved for benchmark tables unless a caller
+    explicitly opts into a clinical-target reference path.
+    """
     assert_no_control_rows(df)
     assert_no_clinical_score_features(feature_cols)
     if not allow_clinical_target:

@@ -1,8 +1,8 @@
-"""Feature-group registry for multimodal FRDA biomarker models.
+"""Feature registry for FRDA biomarker models.
 
-The groups separate background covariates, structural MRI measures, diffusion
-MRI measures, and optional QSM features so experiments can compare single-
-modality and multimodal composites consistently.
+Primary models use the full imaging feature pool. Demographic/background
+columns are listed only for patient-adaptive modulators and legacy imports;
+they are not part of the default imaging feature set.
 """
 from __future__ import annotations
 
@@ -41,30 +41,18 @@ qsm: List[str] = []  # Optional modality; empty when no QSM features are availab
 
 
 FEATURE_GROUPS: Dict[str, List[str]] = {
-    "background": list(background),
     "structural": list(structural),
     "structural_ext": list(structural_ext),
     "diffusion": list(diffusion),
 }
 
-# Flat combinations used by feature-selection and progression models.
+# Flat feature pool used by feature-selection and progression models.
 FEATURE_COMBOS: Dict[str, List[str]] = {
-    "background": list(background),
-    "structural": list(structural),
-    "structural_ext": list(structural_ext),
-    "diffusion": list(diffusion),
-    "background_diffusion": background + diffusion,
-    "background_structural": background + structural,
-    "background_structural_ext": background + structural_ext,
-    "structural_diffusion": structural + diffusion,
-    "structural_ext_diffusion": structural_ext + diffusion,
-    "background_structural_diffusion": background + structural + diffusion,
-    "background_structural_ext": background + structural_ext,
-    "background_structural_ext_diffusion": background + structural_ext + diffusion,
+    "all_imaging": structural_ext + diffusion,
 }
 
-# Global pool used for entropy-selected subsets.
-ALL_FEATURES: List[str] = sorted(set(background + structural_ext + diffusion))
+# Global imaging pool used for selection and progression models.
+ALL_FEATURES: List[str] = sorted(set(structural_ext + diffusion))
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +84,6 @@ diffusion_v1: List[str] = [
 ]
 
 FEATURE_GROUPS_V1: Dict[str, List[str]] = {
-    "background": list(background_v1),
     "structural": list(structural_v1),
     "diffusion": list(diffusion_v1),
     "qsm": list(qsm),
@@ -104,16 +91,7 @@ FEATURE_GROUPS_V1: Dict[str, List[str]] = {
 
 
 PAPER_COMBINATIONS = [
-    {"name": "background_only",                   "domains": [background_v1],                                            "skip": False},
-    {"name": "structural_only",                   "domains": [structural_v1],                                            "skip": False},
-    {"name": "diffusion_only",                    "domains": [diffusion_v1],                                             "skip": False},
-    {"name": "qsm_only",                          "domains": [qsm],                                                       "skip": True},
-    {"name": "all_neuroimaging",                  "domains": [structural_v1, diffusion_v1],                              "skip": False},
-    {"name": "background_structural",             "domains": [background_v1, structural_v1],                             "skip": False},
-    {"name": "background_diffusion",              "domains": [background_v1, diffusion_v1],                              "skip": False},
-    {"name": "background_qsm",                    "domains": [background_v1, qsm],                                       "skip": True},
-    {"name": "background_structural_diffusion",   "domains": [background_v1, structural_v1, diffusion_v1],               "skip": False},
-    {"name": "background_all_neuroimaging",       "domains": [background_v1, structural_v1, diffusion_v1, qsm],          "skip": True},
+    {"name": "all_imaging", "domains": [structural_v1, diffusion_v1], "skip": False},
 ]
 
 

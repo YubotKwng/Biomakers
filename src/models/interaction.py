@@ -81,6 +81,7 @@ class InteractionLinearComposite:
     def _standardise(
         self, X: pd.DataFrame, Z: pd.DataFrame, *, fit: bool
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Standardise imaging and modulator columns using training-fold stats."""
         eps = self.config.interaction_eps
         if fit:
             self.x_mean_ = X.mean(axis=0)
@@ -94,6 +95,7 @@ class InteractionLinearComposite:
         return X_std, Z_std
 
     def _build_design(self, X_std: pd.DataFrame, Z_std: pd.DataFrame) -> np.ndarray:
+        """Build ``[intercept | X | X-by-Z interactions]`` design matrix."""
         n, p = X_std.shape
         inter = expand_interactions(X_std, Z_std)
         intercept = np.ones((n, 1), dtype=float)
@@ -110,12 +112,14 @@ class InteractionLinearComposite:
         subject_id: np.ndarray,
         visit: np.ndarray,
     ) -> np.ndarray:
+        """Return visit-2 minus visit-1 rows of the interaction design."""
         rows_v1, rows_v2, _ = _paired_rows_by_subject(subject_id, visit)
         Delta = D[rows_v2] - D[rows_v1]
         # Drop intercept column (all zeros after differencing).
         return Delta[:, 1:]
 
     def _fit_en(self, Delta: np.ndarray, *, alpha: float, l1_ratio: float) -> np.ndarray:
+        """Fit ElasticNet direction on paired design deltas."""
         y = np.ones(Delta.shape[0], dtype=float)
         model = ElasticNet(
             alpha=float(alpha),
@@ -134,6 +138,7 @@ class InteractionLinearComposite:
         D: np.ndarray,
         subject_id: np.ndarray,
         visit: np.ndarray,
+        cv_group_id: np.ndarray | None = None,
         *,
         alpha_grid: Iterable[float],
         l1_ratio_grid: Iterable[float],
@@ -143,7 +148,10 @@ class InteractionLinearComposite:
         rows_v1, rows_v2, common_subjects = _paired_rows_by_subject(subject_id, visit)
         # Paired-diff dataset is one row per subject.
         Delta = (D[rows_v2] - D[rows_v1])[:, 1:]
-        groups = common_subjects
+        if cv_group_id is None:
+            groups = common_subjects
+        else:
+            groups = np.asarray(cv_group_id)[rows_v1]
 
         best = (-np.inf, None, None)
         for a in alpha_grid:
@@ -175,10 +183,15 @@ class InteractionLinearComposite:
         Z: pd.DataFrame,
         subject_id: pd.Series | np.ndarray,
         visit: pd.Series | np.ndarray,
+        cv_group_id: pd.Series | np.ndarray | None = None,
     ) -> "InteractionLinearComposite":
+        """Fit adaptive imaging weights from paired training-fold visits."""
         subject_arr = np.asarray(subject_id)
         visit_arr = np.asarray(visit).astype(int)
+        cv_group_arr = None if cv_group_id is None else np.asarray(cv_group_id)
 
+        # Standardisers are fitted only on the current training fold and reused
+        # unchanged when scoring held-out visits.
         X_std, Z_std = self._standardise(X, Z, fit=True)
         D = self._build_design(X_std, Z_std)
 
@@ -187,6 +200,7 @@ class InteractionLinearComposite:
                 D,
                 subject_arr,
                 visit_arr,
+                cv_group_id=cv_group_arr,
                 alpha_grid=self.config.interaction_en_alpha_grid,
                 l1_ratio_grid=self.config.interaction_en_l1_ratio_grid,
             )
@@ -207,6 +221,7 @@ class InteractionLinearComposite:
         return self
 
     def score(self, X: pd.DataFrame, Z: pd.DataFrame) -> np.ndarray:
+        """Score visit-level rows with the learned adaptive composite."""
         if self.coef_ is None:
             raise RuntimeError("fit() must be called before score()")
         X_std, Z_std = self._standardise(X, Z, fit=False)
@@ -214,6 +229,7 @@ class InteractionLinearComposite:
         return D @ self.coef_
 
     def imaging_weights(self, z_star: dict) -> pd.Series:
+        """Return effective imaging weights for a specific modulator profile."""
         if self.coef_main_ is None or self.coef_interaction_ is None:
             raise RuntimeError("fit() must be called before imaging_weights()")
         if self.z_mean_ is None or self.z_sd_ is None:
@@ -227,4 +243,3 @@ class InteractionLinearComposite:
 
 
 __all__ = ["InteractionLinearComposite"]
-

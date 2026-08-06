@@ -29,6 +29,8 @@ def prepare_fusion_arrays(df, feature_cols, meta, scaler, *, subject_col, device
     """
     assert_no_control_rows(df)
     assert_no_clinical_score_features(feature_cols)
+    # The scaler must be fitted by the caller on the current training fold.
+    # This function only transforms the supplied split.
     X = scaler.transform(df[feature_cols].values)
     if include_clinical_targets:
         fars = df['FARS'].values.reshape(-1, 1)
@@ -54,8 +56,8 @@ def evaluate_fusion_loss(
     *,
     use_clinical_heads=False,
     lambda_prog=1.0,
-    lambda_fars=1.0,
-    lambda_sara=1.0,
+    lambda_fars=0.0,
+    lambda_sara=0.0,
 ):
     """Compute multitask training / validation loss for FusionModel.
 
@@ -69,6 +71,8 @@ def evaluate_fusion_loss(
     else:
         loss_fars = torch.tensor(0.0, device=fars.device)
         loss_sara = torch.tensor(0.0, device=fars.device)
+    # Progression loss is computed from visit-paired scores inside each
+    # subject group, matching the reporting metric direction.
     loss_prog = paired_progression_loss(prog.view(-1), arrays['visit'], arrays['subject'])
     total_loss = lambda_prog * loss_prog + lambda_fars * loss_fars + lambda_sara * loss_sara
     return total_loss, fars, sara, prog
@@ -81,6 +85,7 @@ def train_fusion_model(
     scaler,
     *,
     subject_col,
+    split_group_col=None,
     device,
     epochs=20,
     patience=4,
@@ -91,8 +96,8 @@ def train_fusion_model(
     seed=42,
     use_clinical_heads=False,
     lambda_prog=1.0,
-    lambda_fars=1.0,
-    lambda_sara=1.0,
+    lambda_fars=0.0,
+    lambda_sara=0.0,
 ):
     """LOO-fold training loop with subject-level validation early stopping.
 
@@ -101,10 +106,19 @@ def train_fusion_model(
     """
     if use_clinical_heads:
         raise ValueError("Clinical auxiliary heads use FARS/SARA during training and are disabled by policy.")
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
     assert_no_control_rows(train_df)
     assert_no_clinical_score_features(feature_cols)
+    # Early stopping uses a validation subset drawn from the training fold
+    # only. The outer test fold never contributes to checkpoint selection.
     train_split, val_split = split_train_val_subjects(
-        train_df, subject_col, val_fraction=val_fraction, seed=seed
+        train_df,
+        subject_col,
+        val_fraction=val_fraction,
+        seed=seed,
+        split_group_col=split_group_col,
     )
     train_arrays = prepare_fusion_arrays(
         train_split, feature_cols, meta, scaler,
@@ -154,6 +168,8 @@ def train_fusion_model(
             )
         val_value = float(val_loss.item())
 
+        # Store the best validation checkpoint; this protects small DL models
+        # from simply memorising the training-fold progression direction.
         if val_value < best_val:
             best_val = val_value
             best_state = copy.deepcopy(model.state_dict())
@@ -182,6 +198,7 @@ class _FusionProgWrapper(nn.Module):
         self.model = model
 
     def forward(self, x_struct, x_diff, x_back):
+        """Forward inputs and keep only the progression head output."""
         return self.model(x_struct, x_diff, x_back)[2]
 
 

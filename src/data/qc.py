@@ -70,7 +70,10 @@ def filter_complete_pairs(
     df: pd.DataFrame, subject_col: str, feature_cols: Sequence[str]
 ) -> pd.DataFrame:
     """Keep subjects with both visits and complete selected features."""
-    sub = df[[subject_col, "visit"] + list(feature_cols) + ["FARS", "SARA"]].copy()
+    cols = [subject_col, "visit"] + list(feature_cols) + ["FARS", "SARA"]
+    if "subject" in df.columns and "subject" not in cols:
+        cols.append("subject")
+    sub = df[cols].copy()
     sub = sub.dropna(subset=list(feature_cols))
     counts = sub.groupby(subject_col)["visit"].nunique()
     valid = counts[counts == 2].index

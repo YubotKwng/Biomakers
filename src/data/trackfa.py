@@ -695,6 +695,7 @@ def save_trackfa_outputs(
     *,
     save_audit: bool = False,
 ) -> None:
+    """Persist processed TRACK-FA wide output and optional audit table."""
     out_dir = config.trackfa_processed_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1136,6 +1137,7 @@ def run_merge(
 
 
 def qc_long(long_df: pd.DataFrame) -> dict[str, Any]:
+    """Summarise visit-level TRACK-FA data quality for notebook QC cells."""
     demo_cols = ["age", "gender", "gaa_1", "gaa_2", "onset_age", "disease_duration"]
     clinical_base = ["mfars_total", "adl_total", "sara_total"]
     imaging_cols = [
@@ -1187,6 +1189,7 @@ def qc_long(long_df: pd.DataFrame) -> dict[str, Any]:
 
 
 def qc_pairs(pairs_df: pd.DataFrame) -> dict[str, Any]:
+    """Summarise paired-interval TRACK-FA data quality and clinical deltas."""
     pair_series = pairs_df["patient_id"].astype(str).str.split("_", n=1, expand=True)[1]
     subject_series = pairs_df["patient_id"].astype(str).str.split("_", n=1, expand=True)[0]
     out: dict[str, Any] = {
@@ -1220,6 +1223,7 @@ def qc_pairs(pairs_df: pd.DataFrame) -> dict[str, Any]:
 
 
 def imaging_coverage(long_df: pd.DataFrame, *, missing_threshold: float = 0.20) -> pd.DataFrame:
+    """Report non-missing imaging-feature coverage in visit-level data."""
     demo_cols = ["age", "gender", "gaa_1", "gaa_2", "onset_age", "disease_duration"]
     clinical_base = ["mfars_total", "adl_total", "sara_total"]
     imaging_cols = [
