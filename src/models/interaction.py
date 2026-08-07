@@ -92,6 +92,11 @@ class InteractionLinearComposite:
             raise RuntimeError("Standardiser not fit; call fit() first.")
         X_std = (X - self.x_mean_) / self.x_sd_
         Z_std = (Z - self.z_mean_) / self.z_sd_
+        clip = getattr(self.config, "interaction_z_clip", None)
+        if clip is not None:
+            clip = float(clip)
+            X_std = X_std.clip(lower=-clip, upper=clip)
+            Z_std = Z_std.clip(lower=-clip, upper=clip)
         return X_std, Z_std
 
     def _build_design(self, X_std: pd.DataFrame, Z_std: pd.DataFrame) -> np.ndarray:

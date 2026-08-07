@@ -108,6 +108,7 @@ def srm_global_loocv(
     k: int = 8,
     ridge: float = 1e-6,
     covariance_shrinkage: float = 0.0,
+    z_clip: float | None = None,
     cv_n_splits: int | None = None,
     random_seed: int = 42,
     compute_ci: bool = True,
@@ -117,6 +118,8 @@ def srm_global_loocv(
 
     If ``cv_n_splits`` is ``None`` or at least the number of subjects, this is
     subject-level LOO. Otherwise it uses subject-grouped K-fold splits.
+    ``z_clip`` optionally clips train-fold-standardised imaging values before
+    fitting and scoring; the default ``None`` preserves historical behaviour.
     """
     feats_present = [f for f in feature_cols if f in df_long.columns]
     if not feats_present:
@@ -169,6 +172,10 @@ def srm_global_loocv(
         X_train = train_df[feats].values if feats else np.zeros((len(train_df), 0))
         X_test = test_df[feats].values if feats else np.zeros((len(test_df), 0))
         X_train_s, X_test_s, _, _ = standardize_train_test(X_train, X_test)
+        if z_clip is not None and X_train_s.shape[1] > 0:
+            clip = float(z_clip)
+            X_train_s = np.clip(X_train_s, -clip, clip)
+            X_test_s = np.clip(X_test_s, -clip, clip)
 
         model = SRMGlobalLinear(ridge=ridge, covariance_shrinkage=covariance_shrinkage).fit(
             X_train_s,
@@ -206,7 +213,198 @@ def srm_global_loocv(
         "n_split_groups": int(len(split_groups)),
         "ridge": float(ridge),
         "covariance_shrinkage": float(covariance_shrinkage),
+        "z_clip": None if z_clip is None else float(z_clip),
     }
 
 
-__all__ = ["SRMGlobalLinear", "srm_global_loocv"]
+def _srm_fit_score_fold(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feats: Sequence[str],
+    subject_col: str,
+    visit_col: str,
+    *,
+    ridge: float,
+    covariance_shrinkage: float,
+    z_clip: float | None,
+) -> pd.DataFrame:
+    """Fit SRM on one training split and score one held-out split."""
+    X_train = train_df[list(feats)].values if feats else np.zeros((len(train_df), 0))
+    X_test = test_df[list(feats)].values if feats else np.zeros((len(test_df), 0))
+    X_train_s, X_test_s, _, _ = standardize_train_test(X_train, X_test)
+    if z_clip is not None and X_train_s.shape[1] > 0:
+        clip = float(z_clip)
+        X_train_s = np.clip(X_train_s, -clip, clip)
+        X_test_s = np.clip(X_test_s, -clip, clip)
+    model = SRMGlobalLinear(
+        ridge=ridge,
+        covariance_shrinkage=covariance_shrinkage,
+    ).fit(
+        X_train_s,
+        train_df[subject_col].values,
+        train_df[visit_col].values,
+    )
+    scores = model.score(X_test_s)
+    return pd.DataFrame({
+        subject_col: test_df[subject_col].values,
+        visit_col: test_df[visit_col].astype(int).values,
+        "score": scores.astype(float),
+    })
+
+
+def srm_global_nested_loocv(
+    df_long: pd.DataFrame,
+    feature_cols: Sequence[str],
+    subject_col: str,
+    visit_col: str = "visit",
+    *,
+    candidates: Sequence[dict] | None = None,
+    selection_method: str = "none",
+    k: int = 8,
+    cv_n_splits: int | None = None,
+    inner_folds: int = 5,
+    random_seed: int = 42,
+    compute_ci: bool = True,
+    split_group_col: str | None = None,
+) -> dict:
+    """Nested subject-level SRM validation with train-fold parameter tuning.
+
+    Candidate ridge, covariance-shrinkage, clipping, and selection settings are
+    chosen inside each outer training fold by inner grouped CV. The outer test
+    fold is then scored once with the selected candidate.
+    """
+    feats_present = [f for f in feature_cols if f in df_long.columns]
+    if not feats_present:
+        return {
+            "oof_df": pd.DataFrame(),
+            "chosen_params_df": pd.DataFrame(),
+            "n_subjects": 0,
+            "d_score": np.nan,
+            "srm": np.nan,
+            "d_ci_low": np.nan,
+            "d_ci_high": np.nan,
+            "selected_features_by_fold": [],
+        }
+    if candidates is None:
+        candidates = [
+            {"ridge": 0.0, "covariance_shrinkage": s, "z_clip": z, "selection_method": selection_method, "k": k}
+            for s in (0.35, 0.4, 0.45)
+            for z in (None, 2.75, 3.0, 3.25)
+        ]
+
+    assert_training_frame_is_patient_only(df_long, feats_present)
+    resolved_split_group_col = resolve_split_group_col(df_long, subject_col, split_group_col)
+    cols = [subject_col, visit_col] + feats_present
+    if resolved_split_group_col not in cols:
+        cols.append(resolved_split_group_col)
+    sub = df_long[cols].dropna().copy()
+    counts = sub.groupby(subject_col)[visit_col].nunique()
+    sub = sub[sub[subject_col].isin(counts[counts == 2].index)].copy()
+
+    groups = sub[resolved_split_group_col].values
+    split_groups = np.asarray(sub[resolved_split_group_col].unique())
+    use_kfold = cv_n_splits is not None and 1 < int(cv_n_splits) < len(split_groups)
+    outer_splits = (
+        group_kfold_indices(groups, n_splits=int(cv_n_splits), seed=random_seed)
+        if use_kfold
+        else (
+            (np.where(groups != sid)[0], np.where(groups == sid)[0])
+            for sid in split_groups
+        )
+    )
+
+    oof_parts: list[pd.DataFrame] = []
+    chosen_rows: list[dict] = []
+    selected_by_fold: list[list[str]] = []
+
+    for outer_fold, (train_idx, test_idx) in enumerate(outer_splits, start=1):
+        train_df = sub.iloc[train_idx].copy()
+        test_df = sub.iloc[test_idx].copy()
+        train_groups = train_df[resolved_split_group_col].values
+        inner_scores: list[tuple[float, dict, list[str]]] = []
+        for cand_idx, cand in enumerate(candidates, start=1):
+            cand = dict(cand)
+            cand_method = cand.get("selection_method", selection_method)
+            cand_k = int(cand.get("k", k))
+            y_select = (train_df[visit_col].values == 2).astype(int)
+            feats = select_features(cand_method, train_df[feats_present], y_select, feats_present, k=cand_k)
+            if not feats:
+                inner_scores.append((float("-inf"), cand, []))
+                continue
+            fold_ds = []
+            for inner_train_idx, inner_val_idx in group_kfold_indices(
+                train_groups,
+                n_splits=inner_folds,
+                seed=random_seed + outer_fold,
+            ):
+                inner_train = train_df.iloc[inner_train_idx].copy()
+                inner_val = train_df.iloc[inner_val_idx].copy()
+                pred_df = _srm_fit_score_fold(
+                    inner_train,
+                    inner_val,
+                    feats,
+                    subject_col,
+                    visit_col,
+                    ridge=float(cand.get("ridge", 0.0)),
+                    covariance_shrinkage=float(cand.get("covariance_shrinkage", 0.0)),
+                    z_clip=cand.get("z_clip"),
+                )
+                deltas = paired_deltas_from_long(
+                    pred_df.rename(columns={"score": "value"}), subject_col, visit_col, "value"
+                )
+                d_val = compute_cohens_d(deltas)["d"]
+                if np.isfinite(d_val):
+                    fold_ds.append(float(d_val))
+            mean_d = float(np.mean(fold_ds)) if fold_ds else float("-inf")
+            inner_scores.append((mean_d, cand, feats))
+        best_inner, best_cand, best_feats = max(inner_scores, key=lambda item: item[0])
+        selected_by_fold.append(list(best_feats))
+        pred_df = _srm_fit_score_fold(
+            train_df,
+            test_df,
+            best_feats,
+            subject_col,
+            visit_col,
+            ridge=float(best_cand.get("ridge", 0.0)),
+            covariance_shrinkage=float(best_cand.get("covariance_shrinkage", 0.0)),
+            z_clip=best_cand.get("z_clip"),
+        )
+        oof_parts.append(pred_df)
+        chosen_rows.append({
+            "outer_fold": outer_fold,
+            "inner_d_score": best_inner,
+            "n_features": len(best_feats),
+            **best_cand,
+        })
+
+    oof_df = pd.concat(oof_parts, ignore_index=True) if oof_parts else pd.DataFrame()
+    deltas = paired_deltas_from_long(
+        oof_df.rename(columns={"score": "value"}), subject_col, visit_col, "value"
+    )
+    d_out = compute_cohens_d(deltas)
+    srm_out = compute_srm(deltas)
+    if compute_ci:
+        _, d_lo, d_hi = bootstrap_ci_d(
+            oof_df.rename(columns={"score": "value"}), subject_col, visit_col, "value"
+        )
+    else:
+        d_lo = np.nan
+        d_hi = np.nan
+    return {
+        "oof_df": oof_df,
+        "chosen_params_df": pd.DataFrame(chosen_rows),
+        "n_subjects": int(d_out["n"]),
+        "d_score": d_out["d"],
+        "srm": srm_out["srm"],
+        "d_ci_low": d_lo,
+        "d_ci_high": d_hi,
+        "selected_features_by_fold": selected_by_fold,
+        "cv_n_splits": int(cv_n_splits) if use_kfold else int(len(split_groups)),
+        "cv_mode": "group_kfold" if use_kfold else "loo",
+        "split_group_col": resolved_split_group_col,
+        "n_split_groups": int(len(split_groups)),
+        "inner_folds": int(inner_folds),
+    }
+
+
+__all__ = ["SRMGlobalLinear", "srm_global_loocv", "srm_global_nested_loocv"]

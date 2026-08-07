@@ -145,6 +145,7 @@ class Config:
     interaction_en_l1_ratio_grid: tuple[float, ...] = (0.2, 0.5, 0.8, 1.0)
     interaction_tune_inner_cv: bool = True
     interaction_inner_cv_splits: int = 5
+    interaction_z_clip: float | None = None  # Optional clipping after fold-local standardisation.
     interaction_eps: float = 1e-6           # SD floor in standardiser + loss
     interaction_n_boot: int = 201           # subgroup-importance resamples
     subgroups: dict[str, dict[str, float]] = field(

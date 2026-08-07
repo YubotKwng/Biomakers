@@ -15,7 +15,16 @@ from ..eval.cv import split_train_val_subjects
 from ..models.pair import PairModel
 
 
-def prepare_pair_arrays(df, feature_cols, scaler, *, subject_col, device, include_clinical_targets=False):
+def prepare_pair_arrays(
+    df,
+    feature_cols,
+    scaler,
+    *,
+    subject_col,
+    device,
+    include_clinical_targets=False,
+    z_clip: float | None = None,
+):
     """Build paired-tensor inputs (visit-1 and visit-2 features per subject).
 
     Clinical target tensors are zero-filled unless explicitly requested.
@@ -36,8 +45,14 @@ def prepare_pair_arrays(df, feature_cols, scaler, *, subject_col, device, includ
             x2_list.append(x2.ravel())
             sids.append(sid)
     # The scaler is fit outside this helper on the current training fold.
-    X1 = torch.tensor(scaler.transform(np.vstack(x1_list)), dtype=torch.float32, device=device)
-    X2 = torch.tensor(scaler.transform(np.vstack(x2_list)), dtype=torch.float32, device=device)
+    X1_arr = scaler.transform(np.vstack(x1_list))
+    X2_arr = scaler.transform(np.vstack(x2_list))
+    if z_clip is not None:
+        clip = float(z_clip)
+        X1_arr = np.clip(X1_arr, -clip, clip)
+        X2_arr = np.clip(X2_arr, -clip, clip)
+    X1 = torch.tensor(X1_arr, dtype=torch.float32, device=device)
+    X2 = torch.tensor(X2_arr, dtype=torch.float32, device=device)
     if include_clinical_targets:
         F1 = np.array([df[df[subject_col] == sid].sort_values("visit")["FARS"].iloc[0] for sid in sids], dtype=float)
         F2 = np.array([df[df[subject_col] == sid].sort_values("visit")["FARS"].iloc[1] for sid in sids], dtype=float)
@@ -74,6 +89,7 @@ def train_pair_model(
     lambda_prog=1.0,
     lambda_fars=0.0,
     lambda_sara=0.0,
+    z_clip: float | None = None,
 ):
     """Train ``PairModel`` with subject-level early stopping.
 
@@ -100,10 +116,12 @@ def train_pair_model(
     X1_train, X2_train, sid_train, F1_train, F2_train, S1_train, S2_train = prepare_pair_arrays(
         train_split, feature_cols, scaler, subject_col=subject_col, device=device,
         include_clinical_targets=use_clinical_heads,
+        z_clip=z_clip,
     )
     X1_val, X2_val, sid_val, F1_val, F2_val, S1_val, S2_val = prepare_pair_arrays(
         val_split, feature_cols, scaler, subject_col=subject_col, device=device,
         include_clinical_targets=use_clinical_heads,
+        z_clip=z_clip,
     )
 
     model = PairModel(X1_train.shape[1], dropout=dropout).to(device)

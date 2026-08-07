@@ -22,7 +22,17 @@ from ..models.fusion import FusionModel
 from .loss import paired_progression_loss
 
 
-def prepare_fusion_arrays(df, feature_cols, meta, scaler, *, subject_col, device, include_clinical_targets=False):
+def prepare_fusion_arrays(
+    df,
+    feature_cols,
+    meta,
+    scaler,
+    *,
+    subject_col,
+    device,
+    include_clinical_targets=False,
+    z_clip: float | None = None,
+):
     """Build per-modality torch tensors + bookkeeping arrays.
 
     Clinical target tensors are zero-filled unless explicitly requested.
@@ -32,6 +42,9 @@ def prepare_fusion_arrays(df, feature_cols, meta, scaler, *, subject_col, device
     # The scaler must be fitted by the caller on the current training fold.
     # This function only transforms the supplied split.
     X = scaler.transform(df[feature_cols].values)
+    if z_clip is not None:
+        clip = float(z_clip)
+        X = np.clip(X, -clip, clip)
     if include_clinical_targets:
         fars = df['FARS'].values.reshape(-1, 1)
         sara = df['SARA'].values.reshape(-1, 1)
@@ -98,6 +111,7 @@ def train_fusion_model(
     lambda_prog=1.0,
     lambda_fars=0.0,
     lambda_sara=0.0,
+    z_clip: float | None = None,
 ):
     """LOO-fold training loop with subject-level validation early stopping.
 
@@ -124,11 +138,13 @@ def train_fusion_model(
         train_split, feature_cols, meta, scaler,
         subject_col=subject_col, device=device,
         include_clinical_targets=use_clinical_heads,
+        z_clip=z_clip,
     )
     val_arrays = prepare_fusion_arrays(
         val_split, feature_cols, meta, scaler,
         subject_col=subject_col, device=device,
         include_clinical_targets=use_clinical_heads,
+        z_clip=z_clip,
     )
 
     dims = {

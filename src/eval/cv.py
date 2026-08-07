@@ -574,6 +574,7 @@ def lda_loocv(
     random_seed: int = 42,
     shrink="auto",
     covariance_shrinkage: float = 0.0,
+    z_clip: float | None = None,
     compute_ci: bool = True,
     split_group_col: str | None = None,
 ):
@@ -583,6 +584,7 @@ def lda_loocv(
     in the training subjects. Held-out visit scores are converted to paired
     deltas and evaluated with Cohen's d and SRM. Uses LOO by default, or
     subject-grouped K-fold when ``cv_n_splits`` is between 2 and n_subjects-1.
+    ``z_clip`` optionally clips fold-standardised imaging values before LDA.
     """
     from .metrics import (
         bootstrap_ci_d,
@@ -658,6 +660,10 @@ def lda_loocv(
         X_test = test_df[feats].values
 
         X_train_s, X_test_s, _, _ = standardize_train_test(X_train, X_test)
+        if z_clip is not None and X_train_s.shape[1] > 0:
+            clip = float(z_clip)
+            X_train_s = np.clip(X_train_s, -clip, clip)
+            X_test_s = np.clip(X_test_s, -clip, clip)
         w = fit_lda_direction(
             X_train_s,
             y_train,
@@ -713,6 +719,189 @@ def lda_loocv(
         "n_split_groups": int(len(split_groups)),
         "shrink": shrink,
         "covariance_shrinkage": float(covariance_shrinkage),
+        "z_clip": None if z_clip is None else float(z_clip),
+    }
+
+
+def lda_nested_loocv(
+    df_long_in: pd.DataFrame,
+    feature_cols: Sequence[str],
+    subject_col: str,
+    visit_col: str = "visit",
+    *,
+    candidates: Sequence[dict] | None = None,
+    selection_method: str = "none",
+    k: int = 8,
+    cv_n_splits: int | None = None,
+    inner_folds: int = 5,
+    random_seed: int = 42,
+    compute_ci: bool = True,
+    split_group_col: str | None = None,
+) -> dict:
+    """Nested LDA validation with train-fold-only hyperparameter selection.
+
+    LDA shrinkage, covariance shrinkage, clipping, and optional feature
+    selection are chosen using inner grouped CV inside each outer training fold.
+    """
+    from .metrics import (
+        bootstrap_ci_d,
+        compute_cohens_d,
+        compute_srm,
+        paired_deltas_from_long,
+    )
+    from ..models.lda import fit_lda_direction, predict_lda_scores
+
+    feats_present = [f for f in feature_cols if f in df_long_in.columns]
+    if not feats_present:
+        return {
+            "oof_df": pd.DataFrame(),
+            "chosen_params_df": pd.DataFrame(),
+            "n_subjects": 0,
+            "d_score": np.nan,
+            "srm": np.nan,
+            "d_ci_low": np.nan,
+            "d_ci_high": np.nan,
+            "selected_features_by_fold": [],
+        }
+    if candidates is None:
+        candidates = [
+            {"shrink": sh, "covariance_shrinkage": cs, "z_clip": z, "selection_method": selection_method, "k": k}
+            for cs in (0.75, 1.0)
+            for sh in ("auto", 1e-8, 0.1, 1.0, 10.0)
+            for z in (None, 4.0, 3.0)
+        ]
+
+    assert_training_frame_is_patient_only(df_long_in, feats_present)
+    resolved_split_group_col = resolve_split_group_col(df_long_in, subject_col, split_group_col)
+    cols = [subject_col, visit_col] + feats_present
+    if resolved_split_group_col not in cols:
+        cols.append(resolved_split_group_col)
+    sub = df_long_in[cols].dropna().copy()
+    counts = sub.groupby(subject_col)[visit_col].nunique()
+    sub = sub[sub[subject_col].isin(counts[counts == 2].index)].copy()
+
+    groups = sub[resolved_split_group_col].values
+    split_groups = np.asarray(sub[resolved_split_group_col].unique())
+    use_kfold = cv_n_splits is not None and 1 < int(cv_n_splits) < len(split_groups)
+    outer_splits = (
+        group_kfold_indices(groups, n_splits=int(cv_n_splits), seed=random_seed)
+        if use_kfold
+        else (
+            (np.where(groups != sid)[0], np.where(groups == sid)[0])
+            for sid in split_groups
+        )
+    )
+
+    def fit_score(train_df: pd.DataFrame, test_df: pd.DataFrame, feats: Sequence[str], cand: dict) -> pd.DataFrame:
+        X_train = train_df[list(feats)].values
+        X_test = test_df[list(feats)].values
+        y_train = (train_df[visit_col].values == 2).astype(int)
+        X_train_s, X_test_s, _, _ = standardize_train_test(X_train, X_test)
+        if cand.get("z_clip") is not None and X_train_s.shape[1] > 0:
+            clip = float(cand["z_clip"])
+            X_train_s = np.clip(X_train_s, -clip, clip)
+            X_test_s = np.clip(X_test_s, -clip, clip)
+        w = fit_lda_direction(
+            X_train_s,
+            y_train,
+            shrink=cand.get("shrink", "auto"),
+            covariance_shrinkage=float(cand.get("covariance_shrinkage", 0.0)),
+        )
+        if w is None:
+            return pd.DataFrame(columns=[subject_col, visit_col, "score"])
+        train_scores = predict_lda_scores(X_train_s, w)
+        orient_df = pd.DataFrame({
+            "_subject": train_df[subject_col].values,
+            "_visit": train_df[visit_col].values,
+            "_score": train_scores,
+        })
+        train_d = compute_cohens_d_from_oof(
+            orient_df, subject_col="_subject", pred_col="_score", visit_col="_visit"
+        )
+        if np.isfinite(train_d) and train_d < 0:
+            w = -w
+        return pd.DataFrame({
+            subject_col: test_df[subject_col].values,
+            visit_col: test_df[visit_col].astype(int).values,
+            "score": predict_lda_scores(X_test_s, w).astype(float),
+        })
+
+    oof_parts: list[pd.DataFrame] = []
+    chosen_rows: list[dict] = []
+    selected_by_fold: list[list[str]] = []
+
+    for outer_fold, (train_idx, test_idx) in enumerate(outer_splits, start=1):
+        train_df = sub.iloc[train_idx].copy()
+        test_df = sub.iloc[test_idx].copy()
+        train_groups = train_df[resolved_split_group_col].values
+        inner_scores: list[tuple[float, dict, list[str]]] = []
+        for cand in candidates:
+            cand = dict(cand)
+            cand_method = cand.get("selection_method", selection_method)
+            cand_k = int(cand.get("k", k))
+            y_select = (train_df[visit_col].values == 2).astype(int)
+            feats = (
+                select_features(cand_method, train_df[feats_present], y_select, feats_present, k=cand_k)
+                if cand_method != "none"
+                else list(feats_present)
+            )
+            if not feats:
+                inner_scores.append((float("-inf"), cand, []))
+                continue
+            fold_ds = []
+            for inner_train_idx, inner_val_idx in group_kfold_indices(
+                train_groups,
+                n_splits=inner_folds,
+                seed=random_seed + outer_fold,
+            ):
+                inner_train = train_df.iloc[inner_train_idx].copy()
+                inner_val = train_df.iloc[inner_val_idx].copy()
+                pred_df = fit_score(inner_train, inner_val, feats, cand)
+                deltas = paired_deltas_from_long(
+                    pred_df.rename(columns={"score": "value"}), subject_col, visit_col, "value"
+                )
+                d_val = compute_cohens_d(deltas)["d"]
+                if np.isfinite(d_val):
+                    fold_ds.append(float(d_val))
+            mean_d = float(np.mean(fold_ds)) if fold_ds else float("-inf")
+            inner_scores.append((mean_d, cand, feats))
+        best_inner, best_cand, best_feats = max(inner_scores, key=lambda item: item[0])
+        selected_by_fold.append(list(best_feats))
+        oof_parts.append(fit_score(train_df, test_df, best_feats, best_cand))
+        chosen_rows.append({
+            "outer_fold": outer_fold,
+            "inner_d_score": best_inner,
+            "n_features": len(best_feats),
+            **best_cand,
+        })
+
+    oof_df = pd.concat(oof_parts, ignore_index=True) if oof_parts else pd.DataFrame()
+    deltas = paired_deltas_from_long(
+        oof_df.rename(columns={"score": "value"}), subject_col, visit_col, "value"
+    )
+    d_out = compute_cohens_d(deltas)
+    srm_out = compute_srm(deltas)
+    if compute_ci:
+        _, d_lo, d_hi = bootstrap_ci_d(
+            oof_df.rename(columns={"score": "value"}), subject_col, visit_col, "value"
+        )
+    else:
+        d_lo = np.nan
+        d_hi = np.nan
+    return {
+        "oof_df": oof_df,
+        "chosen_params_df": pd.DataFrame(chosen_rows),
+        "n_subjects": int(d_out["n"]),
+        "d_score": d_out["d"],
+        "srm": srm_out["srm"],
+        "d_ci_low": d_lo,
+        "d_ci_high": d_hi,
+        "selected_features_by_fold": selected_by_fold,
+        "cv_n_splits": int(cv_n_splits) if use_kfold else int(len(split_groups)),
+        "cv_mode": "group_kfold" if use_kfold else "loo",
+        "split_group_col": resolved_split_group_col,
+        "n_split_groups": int(len(split_groups)),
+        "inner_folds": int(inner_folds),
     }
 
 
@@ -849,6 +1038,7 @@ def tune_and_run_regression_loocv(
     n_components_list: Optional[Sequence[int]] = None,
     random_seed: int = 42,
     param_selection_metric: str = "rmse",
+    z_clip: float | None = None,
     compute_ci: bool = True,
     split_group_col: str | None = None,
 ):
@@ -859,6 +1049,8 @@ def tune_and_run_regression_loocv(
     Uses LOO by default, or grouped K-fold via ``cv_n_splits``. Inner
     hyperparameters can be selected by RMSE or, when visit rows are available,
     by the same paired Cohen's d_z used for progression reporting.
+    ``z_clip`` optionally clips fold-standardised imaging values before
+    fitting each linear backend.
     """
     from .metrics import r2 as _r2, rmse as _rmse  # local alias
 
@@ -939,6 +1131,10 @@ def tune_and_run_regression_loocv(
         y_test = test_df[target_col].values
 
         X_train_s, X_test_s, _, _ = standardize_train_test(X_train, X_test)
+        if z_clip is not None and X_train_s.shape[1] > 0:
+            clip = float(z_clip)
+            X_train_s = np.clip(X_train_s, -clip, clip)
+            X_test_s = np.clip(X_test_s, -clip, clip)
 
         groups_train = train_df[resolved_split_group_col].values
         for tr_idx, va_idx in group_kfold_indices(groups_train, n_splits=inner_folds, seed=random_seed):
@@ -1050,8 +1246,9 @@ def tune_and_run_regression_loocv(
             "srm": np.nan,
             "d_ci_low": np.nan,
             "d_ci_high": np.nan,
-            "selected_features_by_fold": selected_features_by_fold,
-        }
+        "selected_features_by_fold": selected_features_by_fold,
+        "z_clip": None if z_clip is None else float(z_clip),
+    }
     chosen_df = pd.DataFrame(chosen_rows)
     d_score = np.nan
     d_lo = np.nan
@@ -1089,6 +1286,7 @@ __all__ = [
     "nested_groupkfold_inner",
     "tune_and_run_regression_loocv",
     "lda_loocv",
+    "lda_nested_loocv",
     "interaction_loocv",
     "run_cv_loocv_with_coefs",
     "select_params_by_inner_cv_d",
