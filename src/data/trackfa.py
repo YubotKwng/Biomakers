@@ -7,10 +7,12 @@ The output shape is 1 row per participant (``ID``) with visit-suffixed columns
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import re
+import tempfile
 from typing import Any, Iterable, Optional, Tuple
 
 import numpy as np
@@ -19,6 +21,18 @@ import pandas as pd
 from ..config import Config, DEFAULT_CONFIG
 from .ids import std_col
 from .model_safety import assert_no_control_rows, drop_control_rows
+
+
+def _prepare_matplotlib_cache() -> None:
+    """Use a writable local cache for notebook plotting environments."""
+    cache_dir = Path(tempfile.gettempdir()) / "biomarkers-matplotlib-cache"
+    fontconfig_dir = cache_dir / "fontconfig"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    fontconfig_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(cache_dir))
+    os.environ.setdefault("XDG_CACHE_HOME", str(cache_dir))
+    os.environ.setdefault("FONTCONFIG_PATH", str(fontconfig_dir))
+    os.environ.setdefault("MPLBACKEND", "Agg")
 
 
 EVENT_ORDER = {
@@ -1163,8 +1177,8 @@ def qc_long(long_df: pd.DataFrame) -> dict[str, Any]:
 
     # Heatmap: missing fraction by column, grouped.
     try:
+        _prepare_matplotlib_cache()
         import matplotlib.pyplot as plt
-        import seaborn as sns
 
         miss = pd.concat(
             [
@@ -1175,7 +1189,12 @@ def qc_long(long_df: pd.DataFrame) -> dict[str, Any]:
             axis=1,
         ).T
         fig, ax = plt.subplots(figsize=(12, 4))
-        sns.heatmap(miss, cmap="viridis", cbar_kws={"label": "missing fraction"}, ax=ax)
+        im = ax.imshow(miss.to_numpy(dtype=float), aspect="auto", cmap="viridis", vmin=0, vmax=1)
+        fig.colorbar(im, ax=ax, label="missing fraction")
+        ax.set_xticks(range(miss.shape[1]))
+        ax.set_xticklabels(miss.columns, rotation=90, fontsize=6)
+        ax.set_yticks(range(miss.shape[0]))
+        ax.set_yticklabels(miss.index)
         ax.set_title("Missingness heatmap (by column)")
         ax.set_xlabel("column")
         ax.set_ylabel("group")
@@ -1205,13 +1224,13 @@ def qc_pairs(pairs_df: pd.DataFrame) -> dict[str, Any]:
     }
 
     try:
+        _prepare_matplotlib_cache()
         import matplotlib.pyplot as plt
-        import seaborn as sns
 
         fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-        sns.histplot(pairs_df["delta_mfars_total"].dropna(), bins=30, ax=axes[0])
+        axes[0].hist(pairs_df["delta_mfars_total"].dropna(), bins=30, color="#52796f", edgecolor="white")
         axes[0].set_title("delta_mfars_total")
-        sns.histplot(pairs_df["delta_sara_total"].dropna(), bins=30, ax=axes[1])
+        axes[1].hist(pairs_df["delta_sara_total"].dropna(), bins=30, color="#52796f", edgecolor="white")
         axes[1].set_title("delta_sara_total")
         fig.tight_layout()
         out["delta_hist_fig"] = fig

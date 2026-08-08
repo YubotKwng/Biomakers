@@ -46,6 +46,8 @@ class SRMGlobalLinear:
 
     ridge: float = 1e-6
     covariance_shrinkage: float = 0.0
+    start_visit: int = 1
+    end_visit: int = 2
     coef_: np.ndarray | None = field(default=None, init=False)
     feature_names_: list[str] | None = field(default=None, init=False)
 
@@ -60,7 +62,10 @@ class SRMGlobalLinear:
             return self
 
         rows_v1, rows_v2, _ = _paired_rows_by_subject(
-            np.asarray(subject_id), np.asarray(visit).astype(int)
+            np.asarray(subject_id),
+            np.asarray(visit).astype(int),
+            v1=int(self.start_visit),
+            v2=int(self.end_visit),
         )
         if len(rows_v1) < 2:
             self.coef_ = np.zeros(p, dtype=float)
@@ -113,6 +118,8 @@ def srm_global_loocv(
     random_seed: int = 42,
     compute_ci: bool = True,
     split_group_col: str | None = None,
+    start_visit: int = 1,
+    end_visit: int = 2,
 ) -> dict:
     """Run fold-safe subject-level validation for ``SRMGlobalLinear``.
 
@@ -141,8 +148,11 @@ def srm_global_loocv(
     # Drop missing values after resolving the feature list so every fold sees
     # the same complete-case modelling matrix.
     sub = df_long[cols].dropna().copy()
-    counts = sub.groupby(subject_col)[visit_col].nunique()
-    valid_subjects = counts[counts == 2].index
+    interval_visits = {int(start_visit), int(end_visit)}
+    visit_int = pd.to_numeric(sub[visit_col], errors="coerce").astype("Int64")
+    sub = sub[visit_int.isin(interval_visits)].copy()
+    counts = sub.groupby(subject_col)[visit_col].agg(lambda s: interval_visits.issubset(set(pd.to_numeric(s, errors="coerce").dropna().astype(int))))
+    valid_subjects = counts[counts].index
     sub = sub[sub[subject_col].isin(valid_subjects)].copy()
     oof_rows = []
     selected_by_fold: list[list[str]] = []
@@ -165,7 +175,7 @@ def srm_global_loocv(
         test_df = sub.iloc[test_idx].copy()
         # Feature selection is deliberately inside the outer loop: the held-out
         # participant group cannot influence MI/MML ranking or top-k choice.
-        y_select = (train_df[visit_col].values == 2).astype(int)
+        y_select = (pd.to_numeric(train_df[visit_col], errors="coerce").values == int(end_visit)).astype(int)
         feats = select_features(selection_method, train_df[feats_present], y_select, feats_present, k=k)
         selected_by_fold.append(list(feats))
 
@@ -177,7 +187,12 @@ def srm_global_loocv(
             X_train_s = np.clip(X_train_s, -clip, clip)
             X_test_s = np.clip(X_test_s, -clip, clip)
 
-        model = SRMGlobalLinear(ridge=ridge, covariance_shrinkage=covariance_shrinkage).fit(
+        model = SRMGlobalLinear(
+            ridge=ridge,
+            covariance_shrinkage=covariance_shrinkage,
+            start_visit=int(start_visit),
+            end_visit=int(end_visit),
+        ).fit(
             X_train_s,
             train_df[subject_col].values,
             train_df[visit_col].values,
@@ -214,6 +229,8 @@ def srm_global_loocv(
         "ridge": float(ridge),
         "covariance_shrinkage": float(covariance_shrinkage),
         "z_clip": None if z_clip is None else float(z_clip),
+        "start_visit": int(start_visit),
+        "end_visit": int(end_visit),
     }
 
 
@@ -227,6 +244,8 @@ def _srm_fit_score_fold(
     ridge: float,
     covariance_shrinkage: float,
     z_clip: float | None,
+    start_visit: int = 1,
+    end_visit: int = 2,
 ) -> pd.DataFrame:
     """Fit SRM on one training split and score one held-out split."""
     X_train = train_df[list(feats)].values if feats else np.zeros((len(train_df), 0))
@@ -239,6 +258,8 @@ def _srm_fit_score_fold(
     model = SRMGlobalLinear(
         ridge=ridge,
         covariance_shrinkage=covariance_shrinkage,
+        start_visit=int(start_visit),
+        end_visit=int(end_visit),
     ).fit(
         X_train_s,
         train_df[subject_col].values,
@@ -266,6 +287,8 @@ def srm_global_nested_loocv(
     random_seed: int = 42,
     compute_ci: bool = True,
     split_group_col: str | None = None,
+    start_visit: int = 1,
+    end_visit: int = 2,
 ) -> dict:
     """Nested subject-level SRM validation with train-fold parameter tuning.
 
@@ -298,8 +321,11 @@ def srm_global_nested_loocv(
     if resolved_split_group_col not in cols:
         cols.append(resolved_split_group_col)
     sub = df_long[cols].dropna().copy()
-    counts = sub.groupby(subject_col)[visit_col].nunique()
-    sub = sub[sub[subject_col].isin(counts[counts == 2].index)].copy()
+    interval_visits = {int(start_visit), int(end_visit)}
+    visit_int = pd.to_numeric(sub[visit_col], errors="coerce").astype("Int64")
+    sub = sub[visit_int.isin(interval_visits)].copy()
+    counts = sub.groupby(subject_col)[visit_col].agg(lambda s: interval_visits.issubset(set(pd.to_numeric(s, errors="coerce").dropna().astype(int))))
+    sub = sub[sub[subject_col].isin(counts[counts].index)].copy()
 
     groups = sub[resolved_split_group_col].values
     split_groups = np.asarray(sub[resolved_split_group_col].unique())
@@ -326,7 +352,7 @@ def srm_global_nested_loocv(
             cand = dict(cand)
             cand_method = cand.get("selection_method", selection_method)
             cand_k = int(cand.get("k", k))
-            y_select = (train_df[visit_col].values == 2).astype(int)
+            y_select = (pd.to_numeric(train_df[visit_col], errors="coerce").values == int(end_visit)).astype(int)
             feats = select_features(cand_method, train_df[feats_present], y_select, feats_present, k=cand_k)
             if not feats:
                 inner_scores.append((float("-inf"), cand, []))
@@ -348,6 +374,8 @@ def srm_global_nested_loocv(
                     ridge=float(cand.get("ridge", 0.0)),
                     covariance_shrinkage=float(cand.get("covariance_shrinkage", 0.0)),
                     z_clip=cand.get("z_clip"),
+                    start_visit=int(start_visit),
+                    end_visit=int(end_visit),
                 )
                 deltas = paired_deltas_from_long(
                     pred_df.rename(columns={"score": "value"}), subject_col, visit_col, "value"
@@ -368,6 +396,8 @@ def srm_global_nested_loocv(
             ridge=float(best_cand.get("ridge", 0.0)),
             covariance_shrinkage=float(best_cand.get("covariance_shrinkage", 0.0)),
             z_clip=best_cand.get("z_clip"),
+            start_visit=int(start_visit),
+            end_visit=int(end_visit),
         )
         oof_parts.append(pred_df)
         chosen_rows.append({
@@ -404,7 +434,67 @@ def srm_global_nested_loocv(
         "split_group_col": resolved_split_group_col,
         "n_split_groups": int(len(split_groups)),
         "inner_folds": int(inner_folds),
+        "start_visit": int(start_visit),
+        "end_visit": int(end_visit),
     }
 
 
-__all__ = ["SRMGlobalLinear", "srm_global_loocv", "srm_global_nested_loocv"]
+def srm_global_repeated_group_cv(
+    df_long: pd.DataFrame,
+    feature_cols: Sequence[str],
+    subject_col: str,
+    visit_col: str = "visit",
+    *,
+    n_splits: int = 5,
+    n_repeats: int = 10,
+    random_seed: int = 42,
+    **kwargs,
+) -> dict:
+    """Run repeated grouped outer CV by reusing the fold-safe SRM evaluator."""
+    rows = []
+    oof_parts = []
+    selected = []
+    for repeat in range(1, int(n_repeats) + 1):
+        res = srm_global_loocv(
+            df_long,
+            feature_cols,
+            subject_col,
+            visit_col=visit_col,
+            cv_n_splits=int(n_splits),
+            random_seed=random_seed + repeat - 1,
+            **kwargs,
+        )
+        rows.append({
+            "repeat": repeat,
+            "d_score": res["d_score"],
+            "srm": res["srm"],
+            "n_subjects": res["n_subjects"],
+            "d_ci_low": res["d_ci_low"],
+            "d_ci_high": res["d_ci_high"],
+            "cv_n_splits": res["cv_n_splits"],
+            "start_visit": res.get("start_visit", 1),
+            "end_visit": res.get("end_visit", 2),
+        })
+        if not res["oof_df"].empty:
+            tmp = res["oof_df"].copy()
+            tmp["repeat"] = repeat
+            oof_parts.append(tmp)
+        selected.extend(res["selected_features_by_fold"])
+    summary = pd.DataFrame(rows)
+    return {
+        "summary_df": summary,
+        "oof_df": pd.concat(oof_parts, ignore_index=True) if oof_parts else pd.DataFrame(),
+        "selected_features_by_fold": selected,
+        "mean_d_score": float(summary["d_score"].mean()) if not summary.empty else np.nan,
+        "se_d_score": float(summary["d_score"].std(ddof=1) / np.sqrt(len(summary))) if len(summary) > 1 else np.nan,
+        "n_repeats": int(n_repeats),
+        "n_splits": int(n_splits),
+    }
+
+
+__all__ = [
+    "SRMGlobalLinear",
+    "srm_global_loocv",
+    "srm_global_nested_loocv",
+    "srm_global_repeated_group_cv",
+]

@@ -1,8 +1,18 @@
 import numpy as np
 import pandas as pd
 
-from src.data.audit import VISIT_TIME, add_visit_time, audit_visit_patterns
-from src.data.missingness import feature_missingness_report, followup_missingness_analysis
+from src.data.audit import (
+    VISIT_TIME,
+    add_visit_time,
+    analysis_population_counts,
+    audit_visit_patterns,
+    visit_pattern_table,
+)
+from src.data.missingness import (
+    feature_missingness_report,
+    feature_visit_site_missingness_matrix,
+    followup_missingness_analysis,
+)
 
 
 def test_audit_visit_patterns_counts_all_requested_patterns():
@@ -30,6 +40,12 @@ def test_audit_visit_patterns_counts_all_requested_patterns():
     assert out["n_v1_v3"] == 2
     assert out["n_complete"] == 1
 
+    patterns = visit_pattern_table(out)
+    assert patterns.loc[patterns["pattern"] == "111", "meaning"].iloc[0] == "V1, V2, and V3 available"
+
+    populations = analysis_population_counts(df, "subject_id", "visit")
+    assert "V1-V3 primary cohort" in populations["population"].tolist()
+
 
 def test_add_visit_time_uses_canonical_schedule():
     df = pd.DataFrame({"visit": [1, "V2", 3]})
@@ -54,6 +70,23 @@ def test_feature_missingness_report_flags_concentrated_missingness():
     assert report["global"].set_index("feature").loc["x", "missing_pct"] == 0.5
     assert "x" in set(report["flags"]["feature"])
     assert report["missing_features"]["feature"].tolist() == ["missing"]
+
+
+def test_feature_visit_site_missingness_matrix_reports_full_strata():
+    df = pd.DataFrame(
+        {
+            "visit": [1, 1, 2, 2],
+            "site": ["A", "B", "A", "B"],
+            "x": [1.0, np.nan, np.nan, 4.0],
+            "y": [np.nan, np.nan, 2.0, 3.0],
+        }
+    )
+
+    out = feature_visit_site_missingness_matrix(df, ["x", "y"], visit_col="visit", site_col="site")
+
+    assert out["matrix"].loc["x", "V1|A"] == 0.0
+    assert out["matrix"].loc["x", "V1|B"] == 1.0
+    assert out["matrix"].loc["y", "V2|A"] == 0.0
 
 
 def test_followup_missingness_analysis_compares_v1_subjects():

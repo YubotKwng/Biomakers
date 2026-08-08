@@ -102,6 +102,67 @@ def feature_missingness_report(
     return outputs
 
 
+def feature_visit_site_missingness_matrix(
+    df: pd.DataFrame,
+    features: Iterable[str],
+    *,
+    visit_col: str = "visit",
+    site_col: str = "site",
+) -> dict[str, pd.DataFrame]:
+    """Return Feature x Visit x Site missingness matrices for notebook display.
+
+    The ``matrix`` output has one row per feature and one column per
+    ``V{n}|site`` stratum. Values are proportions missing, so 0 means complete
+    and 1 means fully missing in that visit/site stratum.
+    """
+    required = {visit_col, site_col}
+    missing = required - set(df.columns)
+    if missing:
+        raise KeyError(f"df missing required columns: {sorted(missing)}")
+
+    feature_list = [f for f in features if f in df.columns]
+    if not feature_list:
+        empty = pd.DataFrame()
+        return {
+            "long": pd.DataFrame(columns=["feature", "visit", "site", "n_rows", "n_missing", "missing_pct"]),
+            "matrix": empty,
+            "n_matrix": empty,
+        }
+
+    tmp = df.copy()
+    tmp["_visit_label"] = tmp[visit_col].map(normalise_visit_label)
+    rows = []
+    for (visit, site), group in tmp.groupby(["_visit_label", site_col], dropna=False, sort=True):
+        n_rows = int(len(group))
+        miss = group[feature_list].isna().sum()
+        for feature in feature_list:
+            rows.append({
+                "feature": feature,
+                "visit": visit,
+                "site": site,
+                "n_rows": n_rows,
+                "n_missing": int(miss[feature]),
+                "missing_pct": float(miss[feature] / n_rows) if n_rows else np.nan,
+            })
+    long = pd.DataFrame(rows)
+    if long.empty:
+        matrix = pd.DataFrame(index=feature_list)
+        n_matrix = pd.DataFrame(index=feature_list)
+    else:
+        long["visit_site"] = long["visit"].astype(str) + "|" + long["site"].astype(str)
+        matrix = (
+            long.pivot(index="feature", columns="visit_site", values="missing_pct")
+            .reindex(feature_list)
+            .sort_index(axis=1)
+        )
+        n_matrix = (
+            long.pivot(index="feature", columns="visit_site", values="n_rows")
+            .reindex(feature_list)
+            .sort_index(axis=1)
+        )
+    return {"long": long.drop(columns=["visit_site"], errors="ignore"), "matrix": matrix, "n_matrix": n_matrix}
+
+
 def followup_missingness_analysis(
     df: pd.DataFrame,
     *,
@@ -185,4 +246,8 @@ def followup_missingness_analysis(
     }
 
 
-__all__ = ["feature_missingness_report", "followup_missingness_analysis"]
+__all__ = [
+    "feature_missingness_report",
+    "feature_visit_site_missingness_matrix",
+    "followup_missingness_analysis",
+]

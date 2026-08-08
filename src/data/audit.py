@@ -8,6 +8,16 @@ import pandas as pd
 
 
 VISIT_TIME: dict[str, float] = {"V1": 0.0, "V2": 1.0, "V3": 2.0}
+VISIT_PATTERN_MEANINGS: dict[str, str] = {
+    "111": "V1, V2, and V3 available",
+    "110": "V1 and V2 available; V3 missing",
+    "101": "V1 and V3 available; V2 missing",
+    "011": "V2 and V3 available; V1 missing",
+    "100": "Only V1 available",
+    "010": "Only V2 available",
+    "001": "Only V3 available",
+    "000": "No requested visits available",
+}
 
 
 def normalise_visit_label(value: Any) -> str:
@@ -88,4 +98,72 @@ def audit_visit_patterns(
     return summary
 
 
-__all__ = ["VISIT_TIME", "add_visit_time", "audit_visit_patterns", "normalise_visit_label"]
+def visit_pattern_table(audit: dict[str, Any]) -> pd.DataFrame:
+    """Return notebook-ready visit-pattern counts with plain-language meaning."""
+    patterns = dict(audit.get("patterns", {}))
+    n_subjects = int(audit.get("n_subjects", sum(patterns.values())))
+    rows = []
+    for pattern, meaning in VISIT_PATTERN_MEANINGS.items():
+        n = int(patterns.get(pattern, 0))
+        if n == 0 and pattern == "000":
+            continue
+        rows.append({
+            "pattern": pattern,
+            "meaning": meaning,
+            "n_subjects": n,
+            "percent_subjects": (100.0 * n / n_subjects) if n_subjects else pd.NA,
+        })
+    return pd.DataFrame(rows)
+
+
+def analysis_population_counts(
+    df: pd.DataFrame,
+    subject_col: str,
+    visit_col: str = "visit",
+) -> pd.DataFrame:
+    """Count the analysis populations used by the longitudinal pipeline."""
+    audit = audit_visit_patterns(df, subject_col=subject_col, visit_col=visit_col)
+    rows = [
+        {
+            "population": "V1-V3 primary cohort",
+            "required_visits": "V1,V3",
+            "n_subjects": audit["n_v1_v3"],
+            "role": "Primary 24-month annualised paired change",
+        },
+        {
+            "population": "V1-V2 cohort",
+            "required_visits": "V1,V2",
+            "n_subjects": audit["n_v1_v2"],
+            "role": "Secondary 12-month interval",
+        },
+        {
+            "population": "V2-V3 cohort",
+            "required_visits": "V2,V3",
+            "n_subjects": audit["n_v2_v3"],
+            "role": "Secondary 12-month interval",
+        },
+        {
+            "population": "Complete V1-V2-V3 cohort",
+            "required_visits": "V1,V2,V3",
+            "n_subjects": audit["n_complete"],
+            "role": "Consistency and trajectory checks",
+        },
+        {
+            "population": "All longitudinal with any adjacent pair",
+            "required_visits": "V1,V2 or V2,V3",
+            "n_subjects": int(audit["n_v1_v2"] + audit["n_v2_v3"] - audit["n_complete"]),
+            "role": "Maximum adjacent-interval sensitivity check",
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
+__all__ = [
+    "VISIT_TIME",
+    "VISIT_PATTERN_MEANINGS",
+    "add_visit_time",
+    "analysis_population_counts",
+    "audit_visit_patterns",
+    "normalise_visit_label",
+    "visit_pattern_table",
+]

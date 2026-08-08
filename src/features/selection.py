@@ -141,52 +141,10 @@ def feature_stability_report(
 
 
 def select_one_se_candidate(results: pd.DataFrame) -> pd.Series:
-    """Select a simple stable model within one SE of the best mean d_z.
+    """Backward-compatible alias for hierarchical one-SE model selection."""
+    from ..eval.model_selection import select_hierarchical_candidate
 
-    Required columns are ``mean_validation_dz`` and ``se_validation_dz``.
-    Optional tie-breaker columns are ``feature_count``, ``jaccard_stability``,
-    ``sign_stability``, and ``directional_consistency``.
-    """
-    if results.empty:
-        raise ValueError("results must contain at least one candidate")
-    required = {"mean_validation_dz", "se_validation_dz"}
-    missing = required - set(results.columns)
-    if missing:
-        raise KeyError(f"results missing required columns: {sorted(missing)}")
-
-    work = results.copy()
-    best_idx = work["mean_validation_dz"].astype(float).idxmax()
-    best = work.loc[best_idx]
-    threshold = float(best["mean_validation_dz"]) - float(best["se_validation_dz"])
-    eligible = work[work["mean_validation_dz"].astype(float) >= threshold].copy()
-    if eligible.empty:
-        eligible = work.loc[[best_idx]].copy()
-
-    defaults = {
-        "feature_count": np.inf,
-        "jaccard_stability": -np.inf,
-        "sign_stability": -np.inf,
-        "directional_consistency": -np.inf,
-    }
-    for col, default in defaults.items():
-        if col not in eligible.columns:
-            eligible[col] = default
-        eligible[col] = eligible[col].fillna(default)
-
-    eligible = eligible.assign(_source_index=eligible.index)
-    eligible = eligible.sort_values(
-        [
-            "feature_count",
-            "jaccard_stability",
-            "sign_stability",
-            "directional_consistency",
-            "mean_validation_dz",
-        ],
-        ascending=[True, False, False, False, False],
-        kind="mergesort",
-    )
-    chosen = eligible.iloc[0].drop(labels=["_source_index"], errors="ignore")
-    return chosen
+    return select_hierarchical_candidate(results)
 
 
 # ---------------------------------------------------------------------------
