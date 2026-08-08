@@ -25,7 +25,7 @@ the paired progression effect-size calculation used by the modelling pipeline.
 """
 from __future__ import annotations
 
-from typing import Iterable, Tuple
+from typing import Iterable, Mapping, Tuple
 
 import numpy as np
 import pandas as pd
@@ -50,6 +50,8 @@ def paired_cohens_d(
         ``d`` is ``mean(diff) / sd(diff, ddof=1)``; NaN if SD is zero or
         fewer than two paired subjects are available.
     """
+    # Sort within each subject before differencing so visit2 - visit1 is
+    # applied consistently even if the OOF rows arrive in fold order.
     paired = (oof_df.sort_values([subject_col, visit_col])
                 .groupby(subject_col)[score_col]
                 .apply(list))
@@ -127,6 +129,8 @@ def paired_deltas_from_long(
     tmp = oof_df[required].dropna().copy()
     if tmp.empty:
         return pd.Series(dtype=float)
+    # The modelling notebooks report progression as follow-up minus baseline.
+    # Keeping this helper central avoids sign drift between model families.
     paired = (tmp.sort_values([subject_col, visit_col])
                 .groupby(subject_col)[value_col]
                 .apply(list))
@@ -191,6 +195,89 @@ def bootstrap_ci_d(
     )
 
 
+def _infer_pair_type(df: pd.DataFrame) -> pd.Series:
+    """Infer adjacent clinical interval labels such as V1V2 and V2V3."""
+    if "pair" in df.columns:
+        pair = df["pair"].astype(str).str.upper()
+        hit = pair.str.extract(r"(V\d+V\d+)", expand=False)
+        return hit
+    for col in ("patient_id", "pair_id", "ID", "subject_id"):
+        if col in df.columns:
+            hit = df[col].astype(str).str.upper().str.extract(r"(V\d+V\d+)", expand=False)
+            if hit.notna().any():
+                return hit
+    return pd.Series(np.nan, index=df.index, dtype=object)
+
+
+def _clinical_delta_col(scale: str) -> str | None:
+    key = str(scale).strip().lower()
+    mapping = {
+        "fars": "delta_mfars_total",
+        "mfars": "delta_mfars_total",
+        "mfars_total": "delta_mfars_total",
+        "sara": "delta_sara_total",
+        "sara_total": "delta_sara_total",
+        "adl": "delta_adl_total",
+        "adl_total": "delta_adl_total",
+        "lcslc": "delta_lcslc_total",
+        "lcslc_total": "delta_lcslc_total",
+    }
+    return mapping.get(key)
+
+
+def clinical_change_effect_sizes(
+    pairs_df: pd.DataFrame,
+    scale_cols: Iterable[str] = ("FARS", "SARA"),
+    *,
+    pair_types: Iterable[str] = ("V1V2", "V2V3"),
+    scale_to_delta_col: Mapping[str, str] | None = None,
+) -> pd.DataFrame:
+    """Clinical benchmark d from adjacent visit changes only.
+
+    This uses explicit change columns from the paired TRACK-FA table, e.g.
+    ``delta_mfars_total`` and ``delta_sara_total``. Rows are restricted to
+    adjacent intervals such as ``V1V2`` and ``V2V3``, so the benchmark is
+    computed from FARS2-FARS1 and FARS3-FARS2, never from non-adjacent or
+    visit-level raw values.
+    """
+    if pairs_df is None or pairs_df.empty:
+        return pd.DataFrame(columns=[
+            "feature", "kind", "d", "mean_diff", "sd_diff", "n_pairs",
+            "source_delta_col", "pair_types",
+        ])
+
+    # Clinical benchmarks come from already-computed adjacent deltas in the
+    # paired table, not from raw visit-level clinical values.
+    pair_type = _infer_pair_type(pairs_df)
+    allowed = {str(p).upper() for p in pair_types}
+    pair_mask = pair_type.isin(allowed)
+
+    scale_to_delta_col = dict(scale_to_delta_col or {})
+    rows = []
+    for scale in list(scale_cols):
+        delta_col = scale_to_delta_col.get(scale) or _clinical_delta_col(scale)
+        if delta_col is None or delta_col not in pairs_df.columns:
+            continue
+        deltas = pd.to_numeric(pairs_df.loc[pair_mask, delta_col], errors="coerce").dropna()
+        out = compute_cohens_d(deltas.to_numpy(dtype=float))
+        rows.append({
+            "feature": scale,
+            "kind": "scale",
+            "d": out["d"],
+            "mean_diff": out["mean"],
+            "sd_diff": out["sd"],
+            "n_pairs": out["n"],
+            "source_delta_col": delta_col,
+            "pair_types": ",".join(sorted(allowed)),
+        })
+
+    out_df = pd.DataFrame(rows)
+    if not out_df.empty:
+        out_df = out_df.reindex(out_df["d"].abs().sort_values(ascending=False).index)
+        out_df = out_df.reset_index(drop=True)
+    return out_df
+
+
 # ---------------------------------------------------------------------------
 # Long-format out-of-fold paired effect size helper.
 # ---------------------------------------------------------------------------
@@ -207,8 +294,14 @@ def compute_cohens_d_from_oof(
     paired = paired[paired.map(len) == 2]
     if len(paired) < 2:
         return np.nan
-    diffs = paired.map(lambda x: x[1] - x[0])
-    return diffs.mean() / diffs.std(ddof=1)
+    diffs = paired.map(lambda x: x[1] - x[0]).astype(float).to_numpy()
+    diffs = diffs[np.isfinite(diffs)]
+    if len(diffs) < 2:
+        return np.nan
+    sd = float(np.std(diffs, ddof=1))
+    if sd == 0:
+        return np.nan
+    return float(np.mean(diffs) / sd)
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +411,7 @@ __all__ = [
     "compute_srm",
     "paired_deltas_from_long",
     "bootstrap_ci_d",
+    "clinical_change_effect_sizes",
     "compute_cohens_d_from_oof",
     "reference_effect_sizes",
     "_as_float_array",

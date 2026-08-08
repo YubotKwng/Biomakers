@@ -10,19 +10,31 @@ import torch.nn.functional as F
 from sklearn.preprocessing import StandardScaler
 
 from ..data.qc import filter_complete_pairs
+from ..data.model_safety import assert_no_control_rows, assert_no_clinical_score_features
 from ..eval.cv import split_train_val_subjects
 from ..models.pair import PairModel
 
 
-def prepare_pair_arrays(df, feature_cols, scaler, *, subject_col, device):
-    """Build paired-tensor inputs (visit-1 and visit-2 features per
-    subject) plus FARS / SARA per visit.
+def prepare_pair_arrays(
+    df,
+    feature_cols,
+    scaler,
+    *,
+    subject_col,
+    device,
+    include_clinical_targets=False,
+    z_clip: float | None = None,
+):
+    """Build paired-tensor inputs (visit-1 and visit-2 features per subject).
 
-    Returns tensors for baseline/follow-up features, clinical targets, and
-    paired subject identifiers.
+    Clinical target tensors are zero-filled unless explicitly requested.
     """
+    assert_no_control_rows(df)
+    assert_no_clinical_score_features(feature_cols)
     x1_list, x2_list, sids = [], [], []
     for sid, g in df.groupby(subject_col):
+        # PairModel needs exactly one baseline and one follow-up row per
+        # interval/subject key so progression is well-defined.
         g = g.sort_values('visit')
         if g['visit'].nunique() != 2:
             continue
@@ -32,12 +44,25 @@ def prepare_pair_arrays(df, feature_cols, scaler, *, subject_col, device):
             x1_list.append(x1.ravel())
             x2_list.append(x2.ravel())
             sids.append(sid)
-    X1 = torch.tensor(scaler.transform(np.vstack(x1_list)), dtype=torch.float32, device=device)
-    X2 = torch.tensor(scaler.transform(np.vstack(x2_list)), dtype=torch.float32, device=device)
-    F1 = np.array([df[df[subject_col] == sid].sort_values("visit")["FARS"].iloc[0] for sid in sids], dtype=float)
-    F2 = np.array([df[df[subject_col] == sid].sort_values("visit")["FARS"].iloc[1] for sid in sids], dtype=float)
-    S1 = np.array([df[df[subject_col] == sid].sort_values("visit")["SARA"].iloc[0] for sid in sids], dtype=float)
-    S2 = np.array([df[df[subject_col] == sid].sort_values("visit")["SARA"].iloc[1] for sid in sids], dtype=float)
+    # The scaler is fit outside this helper on the current training fold.
+    X1_arr = scaler.transform(np.vstack(x1_list))
+    X2_arr = scaler.transform(np.vstack(x2_list))
+    if z_clip is not None:
+        clip = float(z_clip)
+        X1_arr = np.clip(X1_arr, -clip, clip)
+        X2_arr = np.clip(X2_arr, -clip, clip)
+    X1 = torch.tensor(X1_arr, dtype=torch.float32, device=device)
+    X2 = torch.tensor(X2_arr, dtype=torch.float32, device=device)
+    if include_clinical_targets:
+        F1 = np.array([df[df[subject_col] == sid].sort_values("visit")["FARS"].iloc[0] for sid in sids], dtype=float)
+        F2 = np.array([df[df[subject_col] == sid].sort_values("visit")["FARS"].iloc[1] for sid in sids], dtype=float)
+        S1 = np.array([df[df[subject_col] == sid].sort_values("visit")["SARA"].iloc[0] for sid in sids], dtype=float)
+        S2 = np.array([df[df[subject_col] == sid].sort_values("visit")["SARA"].iloc[1] for sid in sids], dtype=float)
+    else:
+        F1 = np.zeros((len(sids),), dtype=float)
+        F2 = np.zeros((len(sids),), dtype=float)
+        S1 = np.zeros((len(sids),), dtype=float)
+        S2 = np.zeros((len(sids),), dtype=float)
     F1 = torch.tensor(F1.reshape(-1, 1), dtype=torch.float32, device=device)
     F2 = torch.tensor(F2.reshape(-1, 1), dtype=torch.float32, device=device)
     S1 = torch.tensor(S1.reshape(-1, 1), dtype=torch.float32, device=device)
@@ -51,6 +76,7 @@ def train_pair_model(
     scaler,
     *,
     subject_col,
+    split_group_col=None,
     device,
     epochs=20,
     patience=4,
@@ -59,24 +85,43 @@ def train_pair_model(
     dropout=0.2,
     val_fraction=0.2,
     seed=42,
-    use_clinical_heads=True,
+    use_clinical_heads=False,
     lambda_prog=1.0,
-    lambda_fars=1.0,
-    lambda_sara=1.0,
+    lambda_fars=0.0,
+    lambda_sara=0.0,
+    z_clip: float | None = None,
 ):
     """Train ``PairModel`` with subject-level early stopping.
 
     Uses subject-level validation for early stopping and optimizes paired
-    progression sensitivity with optional clinical auxiliary heads.
+    progression sensitivity. Clinical auxiliary heads are disabled by default
+    because clinical scores must not be used during model training.
     """
+    if use_clinical_heads:
+        raise ValueError("Clinical auxiliary heads use FARS/SARA during training and are disabled by policy.")
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+    assert_no_control_rows(train_df)
+    assert_no_clinical_score_features(feature_cols)
+    # Validation is selected from the current training fold only; it is used
+    # for early stopping, not for final OOF evaluation.
     train_split, val_split = split_train_val_subjects(
-        train_df, subject_col, val_fraction=val_fraction, seed=seed
+        train_df,
+        subject_col,
+        val_fraction=val_fraction,
+        seed=seed,
+        split_group_col=split_group_col,
     )
     X1_train, X2_train, sid_train, F1_train, F2_train, S1_train, S2_train = prepare_pair_arrays(
         train_split, feature_cols, scaler, subject_col=subject_col, device=device,
+        include_clinical_targets=use_clinical_heads,
+        z_clip=z_clip,
     )
     X1_val, X2_val, sid_val, F1_val, F2_val, S1_val, S2_val = prepare_pair_arrays(
         val_split, feature_cols, scaler, subject_col=subject_col, device=device,
+        include_clinical_targets=use_clinical_heads,
+        z_clip=z_clip,
     )
 
     model = PairModel(X1_train.shape[1], dropout=dropout).to(device)
@@ -91,6 +136,8 @@ def train_pair_model(
         model.train()
         opt.zero_grad()
         prog, _, _, _, _ = model(X1_train, X2_train)
+        # Optimise negative SRM: maximising mean(progression)/sd(progression)
+        # across training pairs while keeping the model unsupervised by clinic.
         train_loss = -(prog.mean() / (prog.std(unbiased=True) + 1e-6))
         train_loss.backward()
         opt.step()
@@ -108,6 +155,8 @@ def train_pair_model(
             val_loss = lambda_prog * prog_loss_v + lambda_fars * loss_fars_v + lambda_sara * loss_sara_v
         val_value = float(val_loss.item())
 
+        # Select the checkpoint with the strongest validation progression
+        # objective, again without clinical-score losses by default.
         if val_value < best_val:
             best_val = val_value
             best_state = copy.deepcopy(model.state_dict())
@@ -136,6 +185,7 @@ class _PairProgWrapper(nn.Module):
         self.model = model
 
     def forward(self, x1, x2):
+        """Forward paired visits and keep only the progression output."""
         return self.model(x1, x2)[0]
 
 

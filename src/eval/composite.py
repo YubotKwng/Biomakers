@@ -16,6 +16,7 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler
 
 from ..data.qc import tukey_outliers_mask
+from ..data.model_safety import assert_training_frame_is_patient_only
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +41,7 @@ def compute_composite(
     feature_cols: list[str] = []
     for domain in combo["domains"]:
         feature_cols.extend(domain)
+    assert_training_frame_is_patient_only(df, feature_cols, target_col=target_col)
 
     sub = df.dropna(subset=feature_cols + [target_col]).copy()
     sub = sub[~tukey_outliers_mask(sub, feature_cols, k=3.0)].copy()
@@ -85,6 +87,7 @@ def compute_composite_loocv(
     inverse-transform predictions back to the target scale. Returns the
     held-out rows concatenated with a new ``composite_pred`` column.
     """
+    assert_training_frame_is_patient_only(df_long, feature_cols, target_col=target_col)
     sub = df_long.dropna(subset=list(feature_cols) + [target_col]).copy()
     sub = sub[~tukey_outliers_mask(sub, feature_cols, k=3.0)].copy()
 
@@ -145,6 +148,7 @@ def run_cv_demo2(
         l1_ratios = [0.1, 0.5, 0.9]
 
     feature_cols = [f for domain in combo["domains"] for f in domain]
+    assert_training_frame_is_patient_only(df, feature_cols, target_col=target_col)
     sub = df.dropna(subset=feature_cols + [target_col]).copy()
     n_before = len(sub)
 

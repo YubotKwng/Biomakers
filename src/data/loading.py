@@ -15,11 +15,13 @@ from .ids import find_id_column
 # Spinal cord CSA/ECC filename helpers
 # ---------------------------------------------------------------------------
 def extract_subject_from_name(val):
+    """Extract a CAMPAC subject token from an imaging filename-like value."""
     m = re.search(r"(sub-campac\d+)", str(val))
     return m.group(1) if m else None
 
 
 def is_ses3(val):
+    """Return True when a filename or label refers to session 3."""
     return "ses-3" in str(val)
 
 
@@ -54,6 +56,7 @@ def load_file_df(fname, raw_dir: Path):
 # Melbourne demographic identifier helpers
 # ---------------------------------------------------------------------------
 def find_col(name_to_idx, *names):
+    """Find the first candidate column name present in a normalised mapping."""
     for name in names:
         name = name.lower()
         if name in name_to_idx:
@@ -62,6 +65,7 @@ def find_col(name_to_idx, *names):
 
 
 def is_melfrd_clinical_id(val):
+    """Return True for Melbourne clinical IDs in the 54.xx spreadsheet range."""
     try:
         v = float(val)
         return 54.0 <= v < 55.0
@@ -70,5 +74,6 @@ def is_melfrd_clinical_id(val):
 
 
 def clinical_id_to_bids(cid):
+    """Map Melbourne numeric clinical IDs to BIDS-style subject IDs."""
     suffix = round(float(cid) * 100) - 5400
     return f"sub-melfrd{suffix:03d}"

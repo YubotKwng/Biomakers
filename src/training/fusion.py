@@ -16,24 +16,47 @@ import torch.nn.functional as F
 from sklearn.preprocessing import StandardScaler
 
 from ..data.qc import filter_complete_pairs
+from ..data.model_safety import assert_no_control_rows, assert_no_clinical_score_features
 from ..eval.cv import split_train_val_subjects
 from ..models.fusion import FusionModel
 from .loss import paired_progression_loss
 
 
-def prepare_fusion_arrays(df, feature_cols, meta, scaler, *, subject_col, device):
+def prepare_fusion_arrays(
+    df,
+    feature_cols,
+    meta,
+    scaler,
+    *,
+    subject_col,
+    device,
+    include_clinical_targets=False,
+    z_clip: float | None = None,
+):
     """Build per-modality torch tensors + bookkeeping arrays.
 
-    Returns tensors for modality branches, clinical targets, visit labels, and
-    subject identifiers.
+    Clinical target tensors are zero-filled unless explicitly requested.
     """
+    assert_no_control_rows(df)
+    assert_no_clinical_score_features(feature_cols)
+    # The scaler must be fitted by the caller on the current training fold.
+    # This function only transforms the supplied split.
     X = scaler.transform(df[feature_cols].values)
+    if z_clip is not None:
+        clip = float(z_clip)
+        X = np.clip(X, -clip, clip)
+    if include_clinical_targets:
+        fars = df['FARS'].values.reshape(-1, 1)
+        sara = df['SARA'].values.reshape(-1, 1)
+    else:
+        fars = np.zeros((len(df), 1), dtype=float)
+        sara = np.zeros((len(df), 1), dtype=float)
     arrays = {
         'struct': torch.tensor(X[:, meta['struct_idx']], dtype=torch.float32, device=device),
         'diff': torch.tensor(X[:, meta['diff_idx']], dtype=torch.float32, device=device),
         'back': torch.tensor(X[:, meta['back_idx']], dtype=torch.float32, device=device),
-        'fars': torch.tensor(df['FARS'].values.reshape(-1, 1), dtype=torch.float32, device=device),
-        'sara': torch.tensor(df['SARA'].values.reshape(-1, 1), dtype=torch.float32, device=device),
+        'fars': torch.tensor(fars, dtype=torch.float32, device=device),
+        'sara': torch.tensor(sara, dtype=torch.float32, device=device),
         'visit': np.array(df['visit'].values),
         'subject': np.array(df[subject_col].values),
     }
@@ -44,10 +67,10 @@ def evaluate_fusion_loss(
     model,
     arrays,
     *,
-    use_clinical_heads=True,
+    use_clinical_heads=False,
     lambda_prog=1.0,
-    lambda_fars=1.0,
-    lambda_sara=1.0,
+    lambda_fars=0.0,
+    lambda_sara=0.0,
 ):
     """Compute multitask training / validation loss for FusionModel.
 
@@ -61,6 +84,8 @@ def evaluate_fusion_loss(
     else:
         loss_fars = torch.tensor(0.0, device=fars.device)
         loss_sara = torch.tensor(0.0, device=fars.device)
+    # Progression loss is computed from visit-paired scores inside each
+    # subject group, matching the reporting metric direction.
     loss_prog = paired_progression_loss(prog.view(-1), arrays['visit'], arrays['subject'])
     total_loss = lambda_prog * loss_prog + lambda_fars * loss_fars + lambda_sara * loss_sara
     return total_loss, fars, sara, prog
@@ -73,6 +98,7 @@ def train_fusion_model(
     scaler,
     *,
     subject_col,
+    split_group_col=None,
     device,
     epochs=20,
     patience=4,
@@ -81,26 +107,44 @@ def train_fusion_model(
     dropout=0.2,
     val_fraction=0.2,
     seed=42,
-    use_clinical_heads=True,
+    use_clinical_heads=False,
     lambda_prog=1.0,
-    lambda_fars=1.0,
-    lambda_sara=1.0,
+    lambda_fars=0.0,
+    lambda_sara=0.0,
+    z_clip: float | None = None,
 ):
     """LOO-fold training loop with subject-level validation early stopping.
 
-    Returns tensors for modality branches, clinical targets, visit labels, and
-    subject identifiers.
+    Clinical auxiliary heads are disabled by default because clinical scores
+    must not be used during model training.
     """
+    if use_clinical_heads:
+        raise ValueError("Clinical auxiliary heads use FARS/SARA during training and are disabled by policy.")
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+    assert_no_control_rows(train_df)
+    assert_no_clinical_score_features(feature_cols)
+    # Early stopping uses a validation subset drawn from the training fold
+    # only. The outer test fold never contributes to checkpoint selection.
     train_split, val_split = split_train_val_subjects(
-        train_df, subject_col, val_fraction=val_fraction, seed=seed
+        train_df,
+        subject_col,
+        val_fraction=val_fraction,
+        seed=seed,
+        split_group_col=split_group_col,
     )
     train_arrays = prepare_fusion_arrays(
         train_split, feature_cols, meta, scaler,
         subject_col=subject_col, device=device,
+        include_clinical_targets=use_clinical_heads,
+        z_clip=z_clip,
     )
     val_arrays = prepare_fusion_arrays(
         val_split, feature_cols, meta, scaler,
         subject_col=subject_col, device=device,
+        include_clinical_targets=use_clinical_heads,
+        z_clip=z_clip,
     )
 
     dims = {
@@ -140,6 +184,8 @@ def train_fusion_model(
             )
         val_value = float(val_loss.item())
 
+        # Store the best validation checkpoint; this protects small DL models
+        # from simply memorising the training-fold progression direction.
         if val_value < best_val:
             best_val = val_value
             best_state = copy.deepcopy(model.state_dict())
@@ -168,6 +214,7 @@ class _FusionProgWrapper(nn.Module):
         self.model = model
 
     def forward(self, x_struct, x_diff, x_back):
+        """Forward inputs and keep only the progression head output."""
         return self.model(x_struct, x_diff, x_back)[2]
 
 

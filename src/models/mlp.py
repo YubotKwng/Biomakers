@@ -19,6 +19,7 @@ class MLPEncoder(nn.Module):
         )
 
     def forward(self, x):
+        """Encode one standardised feature matrix into a latent representation."""
         return self.net(x)
 
 

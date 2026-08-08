@@ -18,6 +18,7 @@ import pandas as pd
 
 from ..config import Config, DEFAULT_CONFIG
 from .ids import std_col
+from .model_safety import assert_no_control_rows, drop_control_rows
 
 
 EVENT_ORDER = {
@@ -694,6 +695,7 @@ def save_trackfa_outputs(
     *,
     save_audit: bool = False,
 ) -> None:
+    """Persist processed TRACK-FA wide output and optional audit table."""
     out_dir = config.trackfa_processed_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -789,8 +791,10 @@ def run_merge(
     redcap_wide = drop_trackfa_clinical_metadata_columns(redcap_wide)
     redcap_wide = select_trackfa_clinical_features(redcap_wide)
 
-    # FRDA only, 174 subjects.
+    # FRDA only: keep raw controls separated from all downstream modelling tables.
+    redcap_wide = drop_control_rows(redcap_wide)
     redcap_wide = redcap_wide[redcap_wide["study_group"] == 0].copy()
+    assert_no_control_rows(redcap_wide)
     redcap_wide["subject_id"] = redcap_wide["ID"].apply(_strip_trackfa_prefix)
 
     # --- Imaging: load all sheets, normalize into long (participant_id, visit) ---
@@ -1071,6 +1075,8 @@ def run_merge(
         raise AssertionError(
             f"trackfa_long expected 174 unique subjects, got {long_df['subject_id'].nunique()}"
         )
+    assert_no_control_rows(long_df)
+    assert_no_control_rows(pairs_df)
     if pairs_df.shape[1] != 464:
         raise AssertionError(f"trackfa_pairs expected 464 columns, got {pairs_df.shape[1]}")
     # Pair label lives in patient_id suffix.
@@ -1131,6 +1137,7 @@ def run_merge(
 
 
 def qc_long(long_df: pd.DataFrame) -> dict[str, Any]:
+    """Summarise visit-level TRACK-FA data quality for notebook QC cells."""
     demo_cols = ["age", "gender", "gaa_1", "gaa_2", "onset_age", "disease_duration"]
     clinical_base = ["mfars_total", "adl_total", "sara_total"]
     imaging_cols = [
@@ -1182,6 +1189,7 @@ def qc_long(long_df: pd.DataFrame) -> dict[str, Any]:
 
 
 def qc_pairs(pairs_df: pd.DataFrame) -> dict[str, Any]:
+    """Summarise paired-interval TRACK-FA data quality and clinical deltas."""
     pair_series = pairs_df["patient_id"].astype(str).str.split("_", n=1, expand=True)[1]
     subject_series = pairs_df["patient_id"].astype(str).str.split("_", n=1, expand=True)[0]
     out: dict[str, Any] = {
@@ -1215,6 +1223,7 @@ def qc_pairs(pairs_df: pd.DataFrame) -> dict[str, Any]:
 
 
 def imaging_coverage(long_df: pd.DataFrame, *, missing_threshold: float = 0.20) -> pd.DataFrame:
+    """Report non-missing imaging-feature coverage in visit-level data."""
     demo_cols = ["age", "gender", "gaa_1", "gaa_2", "onset_age", "disease_duration"]
     clinical_base = ["mfars_total", "adl_total", "sara_total"]
     imaging_cols = [

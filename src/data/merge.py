@@ -30,6 +30,7 @@ from .loading import (
 # Long-format visit preview
 # ---------------------------------------------------------------------------
 def to_long(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert a legacy wide V1/V2 table into one row per subject visit."""
     # Build the paired feature list from *_v1 and *_v2 columns.
     v1_cols = [c for c in df.columns if c.endswith('_v1')]
     v2_cols = [c for c in df.columns if c.endswith('_v2')]
@@ -277,6 +278,7 @@ def merge_cohorts(config: Config = DEFAULT_CONFIG) -> pd.DataFrame:
         bids_id = clinical_id_to_bids(cid)
 
         def safe_float(x):
+            """Coerce messy spreadsheet cells to float or NaN."""
             try:
                 v = float(x)
                 return v if not np.isnan(v) else np.nan
