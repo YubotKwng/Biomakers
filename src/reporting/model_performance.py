@@ -47,7 +47,12 @@ def best_model_rows_from_logs(log_paths) -> pd.DataFrame:
     frames = []
     for path in [Path(p) for p in log_paths]:
         if path.exists():
-            frame = pd.read_csv(path)
+            try:
+                frame = pd.read_csv(path)
+            except pd.errors.EmptyDataError:
+                continue
+            if frame.empty:
+                continue
             frame["source_log"] = path.name
             frames.append(frame)
     if not frames:
@@ -56,8 +61,18 @@ def best_model_rows_from_logs(log_paths) -> pd.DataFrame:
     if "model" not in logs or "d_score" not in logs:
         return pd.DataFrame()
     logs["d_score"] = pd.to_numeric(logs["d_score"], errors="coerce")
-    logs = logs.dropna(subset=["model", "d_score"]).copy()
-    logs = logs.sort_values("d_score", ascending=False, kind="mergesort")
+    if "mean_validation_annual_dz" in logs.columns:
+        logs["mean_validation_annual_dz"] = pd.to_numeric(logs["mean_validation_annual_dz"], errors="coerce")
+    else:
+        logs["mean_validation_annual_dz"] = np.nan
+    if "annual_interval_gap" in logs.columns:
+        logs["annual_interval_gap"] = pd.to_numeric(logs["annual_interval_gap"], errors="coerce")
+    else:
+        logs["annual_interval_gap"] = np.nan
+    logs = logs.dropna(subset=["model"]).copy()
+    logs["_sort_annual"] = logs["mean_validation_annual_dz"].fillna(logs["d_score"])
+    logs["_sort_gap"] = logs["annual_interval_gap"].fillna(np.inf)
+    logs = logs.sort_values(["_sort_annual", "_sort_gap", "d_score"], ascending=[False, True, False], kind="mergesort")
     return logs.groupby("model", as_index=False, sort=False).head(1).reset_index(drop=True)
 
 
@@ -119,6 +134,14 @@ def append_log_model_summaries(performance: pd.DataFrame, log_models: pd.DataFra
                 value = row.get("d_score", np.nan)
                 n = row.get("n_subjects", np.nan)
                 status = "available_from_existing_log_check_interval_before_claiming_v1_v3"
+            elif spec["question"] == "Annual sensitivity":
+                value = f"{row.get('dz_v1_v2', np.nan)}; {row.get('dz_v2_v3', np.nan)}"
+                n = row.get("n_subjects", np.nan)
+                status = "available_from_existing_log" if pd.notna(row.get("mean_validation_annual_dz", np.nan)) else "not_available_in_existing_log"
+            elif spec["question"] == "Direction consistency":
+                value = row.get("p_progression", np.nan)
+                n = row.get("n_subjects", np.nan)
+                status = "available_from_existing_log" if pd.notna(value) else "not_available_in_existing_log"
             elif spec["question"] == "Robustness":
                 lo = row.get("d_ci_low", np.nan)
                 hi = row.get("d_ci_high", np.nan)

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from src.data.mri_qc import harmonisation_leakage_policy, mri_outlier_table, site_effect_screen
-from src.eval.intervals import interval_effect_summary
+from src.eval.intervals import annual_tuning_diagnostics, interval_effect_summary
 from src.eval.model_selection import select_hierarchical_candidate
 from src.eval.single_feature import single_feature_interval_baselines
 from src.eval.stability import (
@@ -72,6 +72,41 @@ def test_hierarchical_candidate_uses_one_se_and_stability_tiebreakers():
     chosen = select_hierarchical_candidate(results)
 
     assert chosen["name"] == "simple_stable"
+
+
+def test_hierarchical_candidate_prefers_annual_interval_consistency():
+    results = pd.DataFrame(
+        {
+            "name": ["spiky", "balanced", "weak"],
+            "mean_validation_annual_dz": [0.83, 1.02, 0.63],
+            "se_validation_dz": [0.25, 0.05, 0.03],
+            "dz_v1_v2": [1.40, 1.05, 0.61],
+            "dz_v2_v3": [0.25, 0.98, 0.65],
+            "annual_interval_gap": [1.15, 0.07, 0.04],
+            "p_progression": [0.70, 0.82, 0.65],
+            "feature_count": [4, 5, 3],
+        }
+    )
+
+    chosen = select_hierarchical_candidate(results)
+
+    assert chosen["name"] == "balanced"
+
+
+def test_annual_tuning_diagnostics_uses_v12_and_v23_mean_and_gap():
+    intervals = pd.DataFrame(
+        {
+            "interval": ["V1->V2", "V2->V3"],
+            "d_z": [1.40, 0.25],
+            "p_delta_positive": [0.8, 0.6],
+        }
+    )
+
+    out = annual_tuning_diagnostics(intervals)
+
+    assert out["mean_validation_annual_dz"] == (1.40 + 0.25) / 2
+    assert round(out["annual_interval_gap"], 2) == 1.15
+    assert out["p_progression"] == 0.7
 
 
 def test_mri_qc_site_screen_and_policy_tables():

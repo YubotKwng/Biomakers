@@ -614,6 +614,137 @@ def normalize_trackfa_masterfile(master_df: pd.DataFrame) -> tuple[pd.DataFrame,
     return long_df.reset_index(drop=True), pd.DataFrame(audit_rows)
 
 
+def raw_direct_combination_audit(config: Config = DEFAULT_CONFIG) -> dict[str, pd.DataFrame]:
+    """Directly join raw REDCap and raw imaging rows for pre-cleaning missingness.
+
+    This intentionally happens before the analytic merge steps such as FRDA-only
+    filtering, clinical feature selection, duplicate resolution, complete-sheet
+    filtering, or pair construction. The only transformations are key
+    standardisation to ``participant_id`` and ``visit`` so raw clinical and raw
+    imaging rows can be outer-joined for missingness inspection.
+    """
+    redcap = load_trackfa_redcap_export(config.trackfa_redcap_csv).copy()
+    redcap["participant_id"] = redcap["participant_id"].apply(_normalize_trackfa_participant_id)
+    redcap["_visit"] = redcap.get("redcap_event_name", pd.Series(index=redcap.index, dtype=object)).apply(_event_rank)
+    redcap_visits = redcap[redcap["_visit"].isin([1, 2, 3])].copy()
+    redcap_visits["visit"] = redcap_visits["_visit"].astype(int)
+    clinical_cols = [c for c in redcap_visits.columns if c not in {"participant_id", "visit", "_visit"}]
+    redcap_keyed = redcap_visits[["participant_id", "visit", *clinical_cols]].rename(
+        columns={c: f"clinical__{c}" for c in clinical_cols}
+    )
+
+    master = load_trackfa_masterfile_all_sheets(config.trackfa_masterfile_xlsx)
+    imaging_long, _ = normalize_trackfa_masterfile(master)
+    imaging_cols = [c for c in imaging_long.columns if c not in {"participant_id", "visit"}]
+    imaging_keyed = imaging_long[["participant_id", "visit", *imaging_cols]].rename(
+        columns={c: f"imaging__{c}" for c in imaging_cols}
+    )
+
+    combined = redcap_keyed.merge(
+        imaging_keyed,
+        on=["participant_id", "visit"],
+        how="outer",
+        indicator="source_presence",
+    )
+    value_cols = [c for c in combined.columns if c not in {"participant_id", "visit", "source_presence"}]
+
+    source_summary = pd.DataFrame(
+        [
+            {
+                "source": "REDCap raw export",
+                "raw_rows": int(redcap.shape[0]),
+                "raw_columns": int(redcap.shape[1]),
+                "visit_rows_used_for_direct_join": int(redcap_keyed.shape[0]),
+                "unique_participants": int(redcap["participant_id"].nunique()),
+            },
+            {
+                "source": "Imaging MasterFile all sheets",
+                "raw_rows": int(master.shape[0]),
+                "raw_columns": int(master.shape[1]),
+                "visit_rows_used_for_direct_join": int(imaging_keyed.shape[0]),
+                "unique_participants": int(imaging_keyed["participant_id"].nunique()),
+            },
+            {
+                "source": "Direct outer join",
+                "raw_rows": int(combined.shape[0]),
+                "raw_columns": int(combined.shape[1]),
+                "visit_rows_used_for_direct_join": int(combined.shape[0]),
+                "unique_participants": int(combined["participant_id"].nunique()),
+            },
+        ]
+    )
+
+    presence_summary = (
+        combined["source_presence"]
+        .value_counts(dropna=False)
+        .rename_axis("source_presence")
+        .reset_index(name="n_rows")
+    )
+    visit_presence = (
+        combined.groupby(["visit", "source_presence"], dropna=False, observed=False)
+        .size()
+        .reset_index(name="n_rows")
+        .sort_values(["visit", "source_presence"], kind="mergesort")
+    )
+
+    missingness = (
+        combined[value_cols]
+        .isna()
+        .mean()
+        .rename("missing_pct")
+        .reset_index()
+        .rename(columns={"index": "column"})
+    )
+    missingness["source_block"] = np.select(
+        [
+            missingness["column"].str.startswith("clinical__"),
+            missingness["column"].str.startswith("imaging__"),
+        ],
+        ["clinical_raw", "imaging_raw"],
+        default="other",
+    )
+    missingness = missingness.sort_values(
+        ["missing_pct", "source_block", "column"],
+        ascending=[False, True, True],
+        kind="mergesort",
+    ).reset_index(drop=True)
+
+    missingness_by_visit = (
+        combined.groupby("visit", dropna=False)[value_cols]
+        .apply(lambda g: g.isna().mean())
+        .reset_index()
+        .melt(id_vars="visit", var_name="column", value_name="missing_pct")
+    )
+    missingness_by_visit["source_block"] = np.select(
+        [
+            missingness_by_visit["column"].str.startswith("clinical__"),
+            missingness_by_visit["column"].str.startswith("imaging__"),
+        ],
+        ["clinical_raw", "imaging_raw"],
+        default="other",
+    )
+
+    block_summary = (
+        missingness.groupby("source_block", dropna=False)
+        .agg(
+            n_columns=("column", "count"),
+            mean_missing_pct=("missing_pct", "mean"),
+            max_missing_pct=("missing_pct", "max"),
+        )
+        .reset_index()
+    )
+
+    return {
+        "combined": combined,
+        "source_summary": source_summary,
+        "presence_summary": presence_summary,
+        "visit_presence": visit_presence,
+        "missingness": missingness,
+        "missingness_by_visit": missingness_by_visit,
+        "block_summary": block_summary,
+    }
+
+
 def merge_trackfa(
     redcap_wide: pd.DataFrame, imaging_long: pd.DataFrame
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -726,6 +857,7 @@ __all__ = [
     "load_trackfa_masterfile",
     "load_trackfa_masterfile_all_sheets",
     "normalize_trackfa_masterfile",
+    "raw_direct_combination_audit",
     "merge_trackfa",
     "save_trackfa_outputs",
     "run_merge",

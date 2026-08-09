@@ -13,6 +13,7 @@ from src.data.missingness import (
     feature_visit_site_missingness_matrix,
     followup_missingness_analysis,
 )
+from src.data.trackfa import raw_direct_combination_audit
 
 
 def test_audit_visit_patterns_counts_all_requested_patterns():
@@ -109,3 +110,12 @@ def test_followup_missingness_analysis_compares_v1_subjects():
     assert out["n_complete_v1_v3"] == 2
     assert out["n_missing_v3"] == 1
     assert {"mfars_total", "site"} <= set(out["comparison"]["variable"])
+
+
+def test_raw_direct_combination_audit_reports_precleaning_missingness():
+    out = raw_direct_combination_audit()
+
+    assert {"combined", "source_summary", "missingness", "missingness_by_visit", "block_summary"} <= set(out)
+    assert {"participant_id", "visit", "source_presence"} <= set(out["combined"].columns)
+    assert {"clinical_raw", "imaging_raw"} <= set(out["missingness"]["source_block"])
+    assert out["source_summary"].set_index("source").loc["Direct outer join", "raw_rows"] == len(out["combined"])

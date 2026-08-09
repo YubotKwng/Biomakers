@@ -16,6 +16,7 @@ from ..eval.metrics import (
     compute_srm,
     paired_deltas_from_long,
 )
+from ..eval.intervals import adjacent_pair_interval_effect_summary, annual_tuning_diagnostics
 from ..features.selection import select_features
 
 
@@ -289,6 +290,7 @@ def srm_global_nested_loocv(
     split_group_col: str | None = None,
     start_visit: int = 1,
     end_visit: int = 2,
+    tuning_metric: str = "pooled_dz",
 ) -> dict:
     """Nested subject-level SRM validation with train-fold parameter tuning.
 
@@ -358,6 +360,7 @@ def srm_global_nested_loocv(
                 inner_scores.append((float("-inf"), cand, []))
                 continue
             fold_ds = []
+            inner_pred_parts = []
             for inner_train_idx, inner_val_idx in group_kfold_indices(
                 train_groups,
                 n_splits=inner_folds,
@@ -383,7 +386,23 @@ def srm_global_nested_loocv(
                 d_val = compute_cohens_d(deltas)["d"]
                 if np.isfinite(d_val):
                     fold_ds.append(float(d_val))
-            mean_d = float(np.mean(fold_ds)) if fold_ds else float("-inf")
+                inner_pred_parts.append(pred_df)
+            if str(tuning_metric) == "annual_mean_dz" and inner_pred_parts:
+                inner_oof = pd.concat(inner_pred_parts, ignore_index=True)
+                inner_intervals = adjacent_pair_interval_effect_summary(
+                    inner_oof,
+                    pair_col=subject_col,
+                    visit_col=visit_col,
+                    score_col="score",
+                    n_boot=100,
+                    seed=random_seed + outer_fold + cand_idx,
+                )
+                annual_diag = annual_tuning_diagnostics(inner_intervals)
+                mean_d = annual_diag["mean_validation_annual_dz"]
+                if not np.isfinite(mean_d):
+                    mean_d = float(np.mean(fold_ds)) if fold_ds else float("-inf")
+            else:
+                mean_d = float(np.mean(fold_ds)) if fold_ds else float("-inf")
             inner_scores.append((mean_d, cand, feats))
         best_inner, best_cand, best_feats = max(inner_scores, key=lambda item: item[0])
         selected_by_fold.append(list(best_feats))
@@ -403,6 +422,7 @@ def srm_global_nested_loocv(
         chosen_rows.append({
             "outer_fold": outer_fold,
             "inner_d_score": best_inner,
+            "inner_tuning_metric": tuning_metric,
             "n_features": len(best_feats),
             **best_cand,
         })
@@ -436,6 +456,7 @@ def srm_global_nested_loocv(
         "inner_folds": int(inner_folds),
         "start_visit": int(start_visit),
         "end_visit": int(end_visit),
+        "tuning_metric": tuning_metric,
     }
 
 
