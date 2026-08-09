@@ -10,6 +10,7 @@ from src.eval.stability import (
     score_ranking_stability,
     selected_feature_jaccard,
 )
+from src.reporting.tuning_review import tuning_recommendation, tuning_verification_summary
 from src.models.srm_global import srm_global_loocv, srm_global_repeated_group_cv
 
 
@@ -27,7 +28,9 @@ def test_interval_summary_keeps_primary_and_secondary_separate():
 
     assert out["interval"].tolist() == ["V1->V3", "V1->V2", "V2->V3"]
     assert out.set_index("interval").loc["V1->V3", "n_pairs"] == 3
-    assert out.set_index("interval").loc["V1->V3", "annualised"]
+    assert not out.set_index("interval").loc["V1->V3", "annualised"]
+    assert out.set_index("interval").loc["V1->V2", "annualised"]
+    assert out.set_index("interval").loc["V2->V3", "annualised"]
 
 
 def test_single_feature_baselines_return_feature_interval_rows():
@@ -107,6 +110,43 @@ def test_annual_tuning_diagnostics_uses_v12_and_v23_mean_and_gap():
     assert out["mean_validation_annual_dz"] == (1.40 + 0.25) / 2
     assert round(out["annual_interval_gap"], 2) == 1.15
     assert out["p_progression"] == 0.7
+
+
+def test_annual_tuning_requires_both_annual_intervals_by_default():
+    intervals = pd.DataFrame(
+        {
+            "interval": ["V1->V2"],
+            "d_z": [1.40],
+            "p_delta_positive": [0.8],
+        }
+    )
+
+    out = annual_tuning_diagnostics(intervals)
+
+    assert np.isnan(out["mean_validation_annual_dz"])
+    assert np.isnan(out["annual_interval_gap"])
+
+
+def test_tuning_review_exposes_raw_best_and_hierarchical_recommendation():
+    log = pd.DataFrame(
+        {
+            "param_lambda": [0.001, 0.01, 0.1],
+            "dz_v1_v2": [1.40, 1.05, 0.96],
+            "dz_v2_v3": [0.25, 0.98, 0.93],
+            "mean_validation_annual_dz": [0.83, 1.02, 0.95],
+            "annual_interval_gap": [1.15, 0.07, 0.03],
+            "p_progression": [0.70, 0.82, 0.80],
+            "feature_count": [4, 5, 3],
+            "se_validation_dz": [0.25, 0.10, 0.10],
+        }
+    )
+
+    rec = tuning_recommendation(log)
+    summary = tuning_verification_summary(rec)
+
+    assert rec["raw_best"]["param_lambda"] == 0.01
+    assert rec["recommended"]["param_lambda"] == 0.1
+    assert "Recommended parameters" in set(summary["item"])
 
 
 def test_mri_qc_site_screen_and_policy_tables():

@@ -30,6 +30,7 @@ def optimization_row(
         "mean_validation_annual_dz": float(result.get("mean_validation_annual_dz", np.nan)),
         "annual_interval_gap": float(result.get("annual_interval_gap", np.nan)),
         "p_progression": float(result.get("p_progression", np.nan)),
+        "se_validation_dz": float(result.get("se_validation_dz", np.nan)),
         "d_ci_low": float(result.get("d_ci_low", np.nan)),
         "d_ci_high": float(result.get("d_ci_high", np.nan)),
         "n_subjects": int(result.get("n_subjects", 0) or 0),

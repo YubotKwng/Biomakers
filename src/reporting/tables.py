@@ -40,28 +40,34 @@ def final_model_performance_matrix(
 
     rows = [
         {
-            "question": "2-year disease sensitivity",
-            "metric": "V1->V3 paired d_z",
+            "question": "12-month sensitivity V1->V2",
+            "metric": "V1->V2 paired d_z",
             "role": "Primary",
-            "value": _lookup_interval(composite_intervals, "V1->V3", "d_z"),
+            "value": _lookup_interval(composite_intervals, "V1->V2", "d_z"),
         },
         {
-            "question": "Annual sensitivity",
-            "metric": "V1->V2 and V2->V3 d_z",
+            "question": "12-month sensitivity V2->V3",
+            "metric": "V2->V3 paired d_z",
+            "role": "Primary temporal replication",
+            "value": _lookup_interval(composite_intervals, "V2->V3", "d_z"),
+        },
+        {
+            "question": "24-month cumulative sensitivity",
+            "metric": "V1->V3 paired d_z",
             "role": "Secondary",
-            "value": f"{_lookup_interval(composite_intervals, 'V1->V2', 'd_z')}; {_lookup_interval(composite_intervals, 'V2->V3', 'd_z')}",
+            "value": _lookup_interval(composite_intervals, "V1->V3", "d_z"),
         },
         {
             "question": "Direction consistency",
             "metric": "P(delta > 0)",
             "role": "Secondary",
-            "value": _lookup_interval(composite_intervals, "V1->V3", "p_delta_positive"),
+            "value": f"{_lookup_interval(composite_intervals, 'V1->V2', 'p_delta_positive')}; {_lookup_interval(composite_intervals, 'V2->V3', 'p_delta_positive')}",
         },
         {
             "question": "Robustness",
             "metric": "Bootstrap CI for d_z",
             "role": "Primary uncertainty",
-            "value": f"{_lookup_interval(composite_intervals, 'V1->V3', 'd_z_ci_low')}, {_lookup_interval(composite_intervals, 'V1->V3', 'd_z_ci_high')}",
+            "value": f"V1->V2 [{_lookup_interval(composite_intervals, 'V1->V2', 'd_z_ci_low')}, {_lookup_interval(composite_intervals, 'V1->V2', 'd_z_ci_high')}]; V2->V3 [{_lookup_interval(composite_intervals, 'V2->V3', 'd_z_ci_low')}, {_lookup_interval(composite_intervals, 'V2->V3', 'd_z_ci_high')}]",
         },
         {
             "question": "Better than clinical scale?",

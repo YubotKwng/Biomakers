@@ -16,7 +16,7 @@ from .metrics import (
 
 
 DEFAULT_INTERVALS = (
-    ("V1", "V3", "V1->V3", True),
+    ("V1", "V3", "V1->V3", False),
     ("V1", "V2", "V1->V2", True),
     ("V2", "V3", "V2->V3", True),
 )
@@ -133,6 +133,7 @@ def annual_tuning_diagnostics(
     interval_col: str = "interval",
     dz_col: str = "d_z",
     p_col: str = "p_delta_positive",
+    require_both: bool = True,
 ) -> dict:
     """Return mean annual d_z and consistency diagnostics from V1V2/V2V3."""
     if interval_summary is None or interval_summary.empty:
@@ -156,6 +157,14 @@ def annual_tuning_diagnostics(
     d23 = pd.to_numeric(pd.Series([get("V2->V3", dz_col)]), errors="coerce").iloc[0]
     p12 = pd.to_numeric(pd.Series([get("V1->V2", p_col)]), errors="coerce").iloc[0]
     p23 = pd.to_numeric(pd.Series([get("V2->V3", p_col)]), errors="coerce").iloc[0]
+    if require_both and not (np.isfinite(d12) and np.isfinite(d23)):
+        return {
+            "dz_v1_v2": float(d12) if np.isfinite(d12) else np.nan,
+            "dz_v2_v3": float(d23) if np.isfinite(d23) else np.nan,
+            "mean_validation_annual_dz": np.nan,
+            "annual_interval_gap": np.nan,
+            "p_progression": np.nan,
+        }
     annual_vals = [v for v in (d12, d23) if np.isfinite(v)]
     p_vals = [v for v in (p12, p23) if np.isfinite(v)]
     return {

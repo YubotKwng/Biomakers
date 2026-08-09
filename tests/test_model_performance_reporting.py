@@ -23,7 +23,8 @@ def test_assemble_performance_rows_uses_required_question_schema():
 
     assert out.shape[0] == PERFORMANCE_SPEC.shape[0]
     assert out["question"].tolist() == PERFORMANCE_SPEC["question"].tolist()
-    assert out.loc[out["question"] == "2-year disease sensitivity", "value"].iloc[0] == 1.2
+    assert out.loc[out["question"] == "12-month sensitivity V1->V2", "n"].iloc[0] == 10
+    assert out.loc[out["question"] == "24-month cumulative sensitivity", "value"].iloc[0] == 1.2
 
 
 def test_append_log_model_summaries_keeps_same_schema_for_legacy_models():

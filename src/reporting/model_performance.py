@@ -9,8 +9,9 @@ import pandas as pd
 
 PERFORMANCE_SPEC = pd.DataFrame(
     [
-        {"question": "2-year disease sensitivity", "metric": "V1->V3 paired d_z", "role": "Primary"},
-        {"question": "Annual sensitivity", "metric": "V1->V2 & V2->V3 d_z", "role": "Secondary"},
+        {"question": "12-month sensitivity V1->V2", "metric": "V1->V2 paired d_z, CI, N, P(delta>0)", "role": "Primary"},
+        {"question": "12-month sensitivity V2->V3", "metric": "V2->V3 paired d_z, CI, N, P(delta>0)", "role": "Primary temporal replication"},
+        {"question": "24-month cumulative sensitivity", "metric": "V1->V3 paired d_z", "role": "Secondary"},
         {"question": "Direction consistency", "metric": "P(delta > 0)", "role": "Secondary"},
         {"question": "Robustness", "metric": "bootstrap CI for d_z", "role": "Primary uncertainty"},
         {"question": "Better than clinical scale?", "metric": "d_z composite vs FARS/SARA", "role": "RQ1"},
@@ -130,14 +131,18 @@ def append_log_model_summaries(performance: pd.DataFrame, log_models: pd.DataFra
             n = np.nan
             status = "not_available_in_existing_log"
             evidence = row.get("notes", "")
-            if spec["question"] == "2-year disease sensitivity":
+            if spec["question"] == "12-month sensitivity V1->V2":
+                value = row.get("dz_v1_v2", np.nan)
+                n = row.get("n_subjects", np.nan)
+                status = "available_from_existing_log" if pd.notna(value) else "not_available_in_existing_log"
+            elif spec["question"] == "12-month sensitivity V2->V3":
+                value = row.get("dz_v2_v3", np.nan)
+                n = row.get("n_subjects", np.nan)
+                status = "available_from_existing_log" if pd.notna(value) else "not_available_in_existing_log"
+            elif spec["question"] == "24-month cumulative sensitivity":
                 value = row.get("d_score", np.nan)
                 n = row.get("n_subjects", np.nan)
                 status = "available_from_existing_log_check_interval_before_claiming_v1_v3"
-            elif spec["question"] == "Annual sensitivity":
-                value = f"{row.get('dz_v1_v2', np.nan)}; {row.get('dz_v2_v3', np.nan)}"
-                n = row.get("n_subjects", np.nan)
-                status = "available_from_existing_log" if pd.notna(row.get("mean_validation_annual_dz", np.nan)) else "not_available_in_existing_log"
             elif spec["question"] == "Direction consistency":
                 value = row.get("p_progression", np.nan)
                 n = row.get("n_subjects", np.nan)
@@ -203,23 +208,45 @@ def _resolve_value(question: str, **tables):
     specificity = tables["specificity"]
     stability = tables["stability"]
 
-    if question == "2-year disease sensitivity":
+    if question == "12-month sensitivity V1->V2":
+        row = _interval_row(composite, "V1->V2")
+        if row is None:
+            return np.nan, np.nan, "missing", "composite V1->V2"
+        return (
+            f"{row.get('d_z', np.nan)} [{row.get('d_z_ci_low', np.nan)}, {row.get('d_z_ci_high', np.nan)}]; P={row.get('p_delta_positive', np.nan)}",
+            row.get("n_pairs", np.nan),
+            "computed",
+            "composite V1->V2 OOF annual interval",
+        )
+    if question == "12-month sensitivity V2->V3":
+        row = _interval_row(composite, "V2->V3")
+        if row is None:
+            return np.nan, np.nan, "missing", "composite V2->V3"
+        return (
+            f"{row.get('d_z', np.nan)} [{row.get('d_z_ci_low', np.nan)}, {row.get('d_z_ci_high', np.nan)}]; P={row.get('p_delta_positive', np.nan)}",
+            row.get("n_pairs", np.nan),
+            "computed",
+            "composite V2->V3 OOF annual interval",
+        )
+    if question == "24-month cumulative sensitivity":
         row = _interval_row(composite, "V1->V3")
-        return _value(row, "d_z", "computed", "composite V1->V3")
-    if question == "Annual sensitivity":
+        return _value(row, "d_z", "computed", "composite V1->V3 cumulative")
+    if question == "Direction consistency":
         r12 = _interval_row(composite, "V1->V2")
         r23 = _interval_row(composite, "V2->V3")
-        value = f"{_maybe(r12, 'd_z')}; {_maybe(r23, 'd_z')}"
+        value = f"{_maybe(r12, 'p_delta_positive')}; {_maybe(r23, 'p_delta_positive')}"
         status = "computed" if r12 is not None and r23 is not None else "missing"
-        return value, _maybe(r12, "n_pairs"), status, "composite V1->V2 and V2->V3"
-    if question == "Direction consistency":
-        row = _interval_row(composite, "V1->V3")
-        return _value(row, "p_delta_positive", "computed", "composite V1->V3")
+        return value, _maybe(r12, "n_pairs"), status, "annual V1->V2 and V2->V3 P(delta>0)"
     if question == "Robustness":
-        row = _interval_row(composite, "V1->V3")
-        if row is None:
-            return np.nan, np.nan, "missing", "composite V1->V3 bootstrap CI"
-        return f"{row.get('d_z_ci_low', np.nan)}, {row.get('d_z_ci_high', np.nan)}", row.get("n_pairs", np.nan), "computed", "composite V1->V3 bootstrap CI"
+        r12 = _interval_row(composite, "V1->V2")
+        r23 = _interval_row(composite, "V2->V3")
+        if r12 is None and r23 is None:
+            return np.nan, np.nan, "missing", "annual bootstrap CI"
+        value = (
+            f"V1->V2 [{_maybe(r12, 'd_z_ci_low')}, {_maybe(r12, 'd_z_ci_high')}]; "
+            f"V2->V3 [{_maybe(r23, 'd_z_ci_low')}, {_maybe(r23, 'd_z_ci_high')}]"
+        )
+        return value, _maybe(r12, "n_pairs"), "computed", "annual interval bootstrap CI"
     if question == "Better than clinical scale?":
         comp = _interval_row(composite, "V1->V3")
         clin = _best_abs(clinical, "V1->V3")

@@ -14,6 +14,7 @@ from sklearn.preprocessing import StandardScaler
 
 from .metrics import compute_cohens_d_from_oof
 from .intervals import adjacent_pair_interval_effect_summary, annual_tuning_diagnostics
+from .model_selection import select_hierarchical_candidate
 from ..data.qc import _as_float_array, standardize_train_test, tukey_outliers_mask
 from ..data.model_safety import assert_training_frame_is_patient_only
 from ..features.selection import select_features
@@ -738,7 +739,7 @@ def lda_nested_loocv(
     random_seed: int = 42,
     compute_ci: bool = True,
     split_group_col: str | None = None,
-    tuning_metric: str = "pooled_dz",
+    tuning_metric: str = "annual_mean_dz",
 ) -> dict:
     """Nested LDA validation with train-fold-only hyperparameter selection.
 
@@ -836,22 +837,14 @@ def lda_nested_loocv(
         train_df = sub.iloc[train_idx].copy()
         test_df = sub.iloc[test_idx].copy()
         train_groups = train_df[resolved_split_group_col].values
-        inner_scores: list[tuple[float, dict, list[str]]] = []
-        for cand in candidates:
+        inner_scores: list[dict] = []
+        for cand_idx, cand in enumerate(candidates, start=1):
             cand = dict(cand)
             cand_method = cand.get("selection_method", selection_method)
             cand_k = int(cand.get("k", k))
-            y_select = (train_df[visit_col].values == 2).astype(int)
-            feats = (
-                select_features(cand_method, train_df[feats_present], y_select, feats_present, k=cand_k)
-                if cand_method != "none"
-                else list(feats_present)
-            )
-            if not feats:
-                inner_scores.append((float("-inf"), cand, []))
-                continue
             fold_ds = []
             inner_pred_parts = []
+            inner_selected: list[list[str]] = []
             for inner_train_idx, inner_val_idx in group_kfold_indices(
                 train_groups,
                 n_splits=inner_folds,
@@ -859,7 +852,16 @@ def lda_nested_loocv(
             ):
                 inner_train = train_df.iloc[inner_train_idx].copy()
                 inner_val = train_df.iloc[inner_val_idx].copy()
-                pred_df = fit_score(inner_train, inner_val, feats, cand)
+                y_inner_select = (inner_train[visit_col].values == 2).astype(int)
+                inner_feats = (
+                    select_features(cand_method, inner_train[feats_present], y_inner_select, feats_present, k=cand_k)
+                    if cand_method != "none"
+                    else list(feats_present)
+                )
+                inner_selected.append(list(inner_feats))
+                if not inner_feats:
+                    continue
+                pred_df = fit_score(inner_train, inner_val, inner_feats, cand)
                 deltas = paired_deltas_from_long(
                     pred_df.rename(columns={"score": "value"}), subject_col, visit_col, "value"
                 )
@@ -867,6 +869,17 @@ def lda_nested_loocv(
                 if np.isfinite(d_val):
                     fold_ds.append(float(d_val))
                 inner_pred_parts.append(pred_df)
+            if not inner_pred_parts:
+                inner_scores.append({
+                    "candidate_idx": cand_idx,
+                    "mean_validation_dz": float("-inf"),
+                    "mean_validation_annual_dz": float("-inf"),
+                    "se_validation_dz": 0.0,
+                    "feature_count": np.inf,
+                    "candidate": cand,
+                    "inner_selected_features": inner_selected,
+                })
+                continue
             if str(tuning_metric) == "annual_mean_dz" and inner_pred_parts:
                 inner_oof = pd.concat(inner_pred_parts, ignore_index=True)
                 inner_intervals = adjacent_pair_interval_effect_summary(
@@ -880,17 +893,50 @@ def lda_nested_loocv(
                 annual_diag = annual_tuning_diagnostics(inner_intervals)
                 mean_d = annual_diag["mean_validation_annual_dz"]
                 if not np.isfinite(mean_d):
-                    mean_d = float(np.mean(fold_ds)) if fold_ds else float("-inf")
+                    mean_d = float("-inf")
             else:
+                annual_diag = {}
                 mean_d = float(np.mean(fold_ds)) if fold_ds else float("-inf")
-            inner_scores.append((mean_d, cand, feats))
-        best_inner, best_cand, best_feats = max(inner_scores, key=lambda item: item[0])
+            se_d = float(np.std(fold_ds, ddof=1) / np.sqrt(len(fold_ds))) if len(fold_ds) > 1 else 0.0
+            feature_count = np.median([len(x) for x in inner_selected if x]) if inner_selected else np.inf
+            inner_scores.append({
+                "candidate_idx": cand_idx,
+                "mean_validation_dz": mean_d,
+                "mean_validation_annual_dz": annual_diag.get("mean_validation_annual_dz", mean_d),
+                "dz_v1_v2": annual_diag.get("dz_v1_v2", np.nan),
+                "dz_v2_v3": annual_diag.get("dz_v2_v3", np.nan),
+                "annual_interval_gap": annual_diag.get("annual_interval_gap", np.nan),
+                "p_progression": annual_diag.get("p_progression", np.nan),
+                "se_validation_dz": se_d,
+                "feature_count": feature_count,
+                "candidate": cand,
+                "inner_selected_features": inner_selected,
+            })
+        inner_score_df = pd.DataFrame(inner_scores)
+        if str(tuning_metric) == "annual_mean_dz":
+            choice = select_hierarchical_candidate(inner_score_df)
+        else:
+            choice = inner_score_df.loc[inner_score_df["mean_validation_dz"].astype(float).idxmax()]
+        best_inner = float(choice["mean_validation_annual_dz"] if str(tuning_metric) == "annual_mean_dz" else choice["mean_validation_dz"])
+        best_cand = dict(choice["candidate"])
+        best_method = best_cand.get("selection_method", selection_method)
+        best_k = int(best_cand.get("k", k))
+        y_select = (train_df[visit_col].values == 2).astype(int)
+        best_feats = (
+            select_features(best_method, train_df[feats_present], y_select, feats_present, k=best_k)
+            if best_method != "none"
+            else list(feats_present)
+        )
         selected_by_fold.append(list(best_feats))
         oof_parts.append(fit_score(train_df, test_df, best_feats, best_cand))
         chosen_rows.append({
             "outer_fold": outer_fold,
             "inner_d_score": best_inner,
             "inner_tuning_metric": tuning_metric,
+            "inner_dz_v1_v2": choice.get("dz_v1_v2", np.nan),
+            "inner_dz_v2_v3": choice.get("dz_v2_v3", np.nan),
+            "inner_annual_interval_gap": choice.get("annual_interval_gap", np.nan),
+            "inner_p_progression": choice.get("p_progression", np.nan),
             "n_features": len(best_feats),
             **best_cand,
         })
@@ -1202,11 +1248,26 @@ def tune_and_run_regression_loocv(
                     va_df["pred"] = pred
                     annual_pred_parts.append(va_df)
 
+            se_d = float(np.std(d_scores, ddof=1) / np.sqrt(len(d_scores))) if len(d_scores) > 1 else 0.0
             if selection_metric in {"d", "cohens_d", "d_score"}:
-                return float("-inf") if not d_scores else float(np.mean(d_scores))
+                score = float("-inf") if not d_scores else float(np.mean(d_scores))
+                return {
+                    **params,
+                    "score": score,
+                    "mean_validation_dz": score,
+                    "se_validation_dz": se_d,
+                    "feature_count": len(feats),
+                }
             if selection_metric == "annual_mean_dz":
                 if not annual_pred_parts:
-                    return float("-inf")
+                    return {
+                        **params,
+                        "score": float("-inf"),
+                        "mean_validation_dz": float("-inf"),
+                        "mean_validation_annual_dz": float("-inf"),
+                        "se_validation_dz": se_d,
+                        "feature_count": len(feats),
+                    }
                 annual_oof = pd.concat(annual_pred_parts, ignore_index=True)
                 annual_summary = adjacent_pair_interval_effect_summary(
                     annual_oof,
@@ -1218,9 +1279,24 @@ def tune_and_run_regression_loocv(
                 )
                 annual_diag = annual_tuning_diagnostics(annual_summary)
                 value = annual_diag["mean_validation_annual_dz"]
-                return float(value) if np.isfinite(value) else float("-inf")
+                score = float(value) if np.isfinite(value) else float("-inf")
+                return {
+                    **params,
+                    "score": score,
+                    "mean_validation_dz": score,
+                    "se_validation_dz": se_d,
+                    "feature_count": len(feats),
+                    **annual_diag,
+                }
             rmses = [r for r in rmses if np.isfinite(r)]
-            return np.inf if not rmses else float(np.mean(rmses))
+            score = np.inf if not rmses else float(np.mean(rmses))
+            return {
+                **params,
+                "score": score,
+                "mean_validation_dz": -score if np.isfinite(score) else float("-inf"),
+                "se_validation_dz": float(np.std(rmses, ddof=1) / np.sqrt(len(rmses))) if len(rmses) > 1 else 0.0,
+                "feature_count": len(feats),
+            }
 
         candidates = []
         if model_kind == "ridge":
@@ -1234,19 +1310,23 @@ def tune_and_run_regression_loocv(
         else:
             raise ValueError("unknown model_kind")
 
-        best = None
-        best_params = None
-        for params in candidates:
-            s = score_candidate(params)
-            if best is None:
-                better = True
-            elif selection_metric in {"d", "cohens_d", "d_score", "annual_mean_dz"}:
-                better = s > best
-            else:
-                better = s < best
-            if better:
-                best = s
-                best_params = params
+        candidate_scores = pd.DataFrame([score_candidate(params) for params in candidates])
+        if candidate_scores.empty:
+            best_params = None
+            best = np.nan
+            choice = pd.Series(dtype=object)
+        elif selection_metric == "annual_mean_dz":
+            choice = select_hierarchical_candidate(candidate_scores)
+            best = choice["score"]
+            best_params = {k: choice[k] for k in candidates[0].keys()}
+        elif selection_metric in {"d", "cohens_d", "d_score"}:
+            choice = candidate_scores.loc[candidate_scores["score"].astype(float).idxmax()]
+            best = choice["score"]
+            best_params = {k: choice[k] for k in candidates[0].keys()}
+        else:
+            choice = candidate_scores.loc[candidate_scores["score"].astype(float).idxmin()]
+            best = choice["score"]
+            best_params = {k: choice[k] for k in candidates[0].keys()}
 
         if best_params is None:
             continue
@@ -1275,6 +1355,11 @@ def tune_and_run_regression_loocv(
             "test_fold": fold_idx,
             "param_selection_metric": selection_metric,
             "inner_score": best,
+            "inner_dz_v1_v2": choice.get("dz_v1_v2", np.nan),
+            "inner_dz_v2_v3": choice.get("dz_v2_v3", np.nan),
+            "inner_annual_interval_gap": choice.get("annual_interval_gap", np.nan),
+            "inner_p_progression": choice.get("p_progression", np.nan),
+            "inner_se_validation_dz": choice.get("se_validation_dz", np.nan),
             **best_params,
         })
 
