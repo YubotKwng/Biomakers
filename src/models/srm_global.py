@@ -16,6 +16,8 @@ from ..eval.metrics import (
     compute_srm,
     paired_deltas_from_long,
 )
+from ..eval.intervals import adjacent_pair_interval_effect_summary, annual_tuning_diagnostics
+from ..eval.model_selection import select_hierarchical_candidate
 from ..features.selection import select_features
 
 
@@ -46,6 +48,8 @@ class SRMGlobalLinear:
 
     ridge: float = 1e-6
     covariance_shrinkage: float = 0.0
+    start_visit: int = 1
+    end_visit: int = 2
     coef_: np.ndarray | None = field(default=None, init=False)
     feature_names_: list[str] | None = field(default=None, init=False)
 
@@ -60,7 +64,10 @@ class SRMGlobalLinear:
             return self
 
         rows_v1, rows_v2, _ = _paired_rows_by_subject(
-            np.asarray(subject_id), np.asarray(visit).astype(int)
+            np.asarray(subject_id),
+            np.asarray(visit).astype(int),
+            v1=int(self.start_visit),
+            v2=int(self.end_visit),
         )
         if len(rows_v1) < 2:
             self.coef_ = np.zeros(p, dtype=float)
@@ -113,6 +120,8 @@ def srm_global_loocv(
     random_seed: int = 42,
     compute_ci: bool = True,
     split_group_col: str | None = None,
+    start_visit: int = 1,
+    end_visit: int = 2,
 ) -> dict:
     """Run fold-safe subject-level validation for ``SRMGlobalLinear``.
 
@@ -141,8 +150,11 @@ def srm_global_loocv(
     # Drop missing values after resolving the feature list so every fold sees
     # the same complete-case modelling matrix.
     sub = df_long[cols].dropna().copy()
-    counts = sub.groupby(subject_col)[visit_col].nunique()
-    valid_subjects = counts[counts == 2].index
+    interval_visits = {int(start_visit), int(end_visit)}
+    visit_int = pd.to_numeric(sub[visit_col], errors="coerce").astype("Int64")
+    sub = sub[visit_int.isin(interval_visits)].copy()
+    counts = sub.groupby(subject_col)[visit_col].agg(lambda s: interval_visits.issubset(set(pd.to_numeric(s, errors="coerce").dropna().astype(int))))
+    valid_subjects = counts[counts].index
     sub = sub[sub[subject_col].isin(valid_subjects)].copy()
     oof_rows = []
     selected_by_fold: list[list[str]] = []
@@ -165,7 +177,7 @@ def srm_global_loocv(
         test_df = sub.iloc[test_idx].copy()
         # Feature selection is deliberately inside the outer loop: the held-out
         # participant group cannot influence MI/MML ranking or top-k choice.
-        y_select = (train_df[visit_col].values == 2).astype(int)
+        y_select = (pd.to_numeric(train_df[visit_col], errors="coerce").values == int(end_visit)).astype(int)
         feats = select_features(selection_method, train_df[feats_present], y_select, feats_present, k=k)
         selected_by_fold.append(list(feats))
 
@@ -177,7 +189,12 @@ def srm_global_loocv(
             X_train_s = np.clip(X_train_s, -clip, clip)
             X_test_s = np.clip(X_test_s, -clip, clip)
 
-        model = SRMGlobalLinear(ridge=ridge, covariance_shrinkage=covariance_shrinkage).fit(
+        model = SRMGlobalLinear(
+            ridge=ridge,
+            covariance_shrinkage=covariance_shrinkage,
+            start_visit=int(start_visit),
+            end_visit=int(end_visit),
+        ).fit(
             X_train_s,
             train_df[subject_col].values,
             train_df[visit_col].values,
@@ -214,6 +231,8 @@ def srm_global_loocv(
         "ridge": float(ridge),
         "covariance_shrinkage": float(covariance_shrinkage),
         "z_clip": None if z_clip is None else float(z_clip),
+        "start_visit": int(start_visit),
+        "end_visit": int(end_visit),
     }
 
 
@@ -227,6 +246,8 @@ def _srm_fit_score_fold(
     ridge: float,
     covariance_shrinkage: float,
     z_clip: float | None,
+    start_visit: int = 1,
+    end_visit: int = 2,
 ) -> pd.DataFrame:
     """Fit SRM on one training split and score one held-out split."""
     X_train = train_df[list(feats)].values if feats else np.zeros((len(train_df), 0))
@@ -239,6 +260,8 @@ def _srm_fit_score_fold(
     model = SRMGlobalLinear(
         ridge=ridge,
         covariance_shrinkage=covariance_shrinkage,
+        start_visit=int(start_visit),
+        end_visit=int(end_visit),
     ).fit(
         X_train_s,
         train_df[subject_col].values,
@@ -266,6 +289,9 @@ def srm_global_nested_loocv(
     random_seed: int = 42,
     compute_ci: bool = True,
     split_group_col: str | None = None,
+    start_visit: int = 1,
+    end_visit: int = 2,
+    tuning_metric: str = "annual_mean_dz",
 ) -> dict:
     """Nested subject-level SRM validation with train-fold parameter tuning.
 
@@ -298,8 +324,11 @@ def srm_global_nested_loocv(
     if resolved_split_group_col not in cols:
         cols.append(resolved_split_group_col)
     sub = df_long[cols].dropna().copy()
-    counts = sub.groupby(subject_col)[visit_col].nunique()
-    sub = sub[sub[subject_col].isin(counts[counts == 2].index)].copy()
+    interval_visits = {int(start_visit), int(end_visit)}
+    visit_int = pd.to_numeric(sub[visit_col], errors="coerce").astype("Int64")
+    sub = sub[visit_int.isin(interval_visits)].copy()
+    counts = sub.groupby(subject_col)[visit_col].agg(lambda s: interval_visits.issubset(set(pd.to_numeric(s, errors="coerce").dropna().astype(int))))
+    sub = sub[sub[subject_col].isin(counts[counts].index)].copy()
 
     groups = sub[resolved_split_group_col].values
     split_groups = np.asarray(sub[resolved_split_group_col].unique())
@@ -321,17 +350,14 @@ def srm_global_nested_loocv(
         train_df = sub.iloc[train_idx].copy()
         test_df = sub.iloc[test_idx].copy()
         train_groups = train_df[resolved_split_group_col].values
-        inner_scores: list[tuple[float, dict, list[str]]] = []
+        inner_scores: list[dict] = []
         for cand_idx, cand in enumerate(candidates, start=1):
             cand = dict(cand)
             cand_method = cand.get("selection_method", selection_method)
             cand_k = int(cand.get("k", k))
-            y_select = (train_df[visit_col].values == 2).astype(int)
-            feats = select_features(cand_method, train_df[feats_present], y_select, feats_present, k=cand_k)
-            if not feats:
-                inner_scores.append((float("-inf"), cand, []))
-                continue
             fold_ds = []
+            inner_pred_parts = []
+            inner_selected: list[list[str]] = []
             for inner_train_idx, inner_val_idx in group_kfold_indices(
                 train_groups,
                 n_splits=inner_folds,
@@ -339,15 +365,30 @@ def srm_global_nested_loocv(
             ):
                 inner_train = train_df.iloc[inner_train_idx].copy()
                 inner_val = train_df.iloc[inner_val_idx].copy()
+                y_inner_select = (
+                    pd.to_numeric(inner_train[visit_col], errors="coerce").values == int(end_visit)
+                ).astype(int)
+                inner_feats = select_features(
+                    cand_method,
+                    inner_train[feats_present],
+                    y_inner_select,
+                    feats_present,
+                    k=cand_k,
+                )
+                inner_selected.append(list(inner_feats))
+                if not inner_feats:
+                    continue
                 pred_df = _srm_fit_score_fold(
                     inner_train,
                     inner_val,
-                    feats,
+                    inner_feats,
                     subject_col,
                     visit_col,
                     ridge=float(cand.get("ridge", 0.0)),
                     covariance_shrinkage=float(cand.get("covariance_shrinkage", 0.0)),
                     z_clip=cand.get("z_clip"),
+                    start_visit=int(start_visit),
+                    end_visit=int(end_visit),
                 )
                 deltas = paired_deltas_from_long(
                     pred_df.rename(columns={"score": "value"}), subject_col, visit_col, "value"
@@ -355,9 +396,61 @@ def srm_global_nested_loocv(
                 d_val = compute_cohens_d(deltas)["d"]
                 if np.isfinite(d_val):
                     fold_ds.append(float(d_val))
-            mean_d = float(np.mean(fold_ds)) if fold_ds else float("-inf")
-            inner_scores.append((mean_d, cand, feats))
-        best_inner, best_cand, best_feats = max(inner_scores, key=lambda item: item[0])
+                inner_pred_parts.append(pred_df)
+            if not inner_pred_parts:
+                inner_scores.append({
+                    "candidate_idx": cand_idx,
+                    "mean_validation_dz": float("-inf"),
+                    "mean_validation_annual_dz": float("-inf"),
+                    "se_validation_dz": 0.0,
+                    "feature_count": np.inf,
+                    "candidate": cand,
+                    "inner_selected_features": inner_selected,
+                })
+                continue
+            if str(tuning_metric) == "annual_mean_dz" and inner_pred_parts:
+                inner_oof = pd.concat(inner_pred_parts, ignore_index=True)
+                inner_intervals = adjacent_pair_interval_effect_summary(
+                    inner_oof,
+                    pair_col=subject_col,
+                    visit_col=visit_col,
+                    score_col="score",
+                    n_boot=100,
+                    seed=random_seed + outer_fold + cand_idx,
+                )
+                annual_diag = annual_tuning_diagnostics(inner_intervals)
+                mean_d = annual_diag["mean_validation_annual_dz"]
+                if not np.isfinite(mean_d):
+                    mean_d = float("-inf")
+            else:
+                annual_diag = {}
+                mean_d = float(np.mean(fold_ds)) if fold_ds else float("-inf")
+            se_d = float(np.std(fold_ds, ddof=1) / np.sqrt(len(fold_ds))) if len(fold_ds) > 1 else 0.0
+            feature_count = np.median([len(x) for x in inner_selected if x]) if inner_selected else np.inf
+            inner_scores.append({
+                "candidate_idx": cand_idx,
+                "mean_validation_dz": mean_d,
+                "mean_validation_annual_dz": annual_diag.get("mean_validation_annual_dz", mean_d),
+                "dz_v1_v2": annual_diag.get("dz_v1_v2", np.nan),
+                "dz_v2_v3": annual_diag.get("dz_v2_v3", np.nan),
+                "annual_interval_gap": annual_diag.get("annual_interval_gap", np.nan),
+                "p_progression": annual_diag.get("p_progression", np.nan),
+                "se_validation_dz": se_d,
+                "feature_count": feature_count,
+                "candidate": cand,
+                "inner_selected_features": inner_selected,
+            })
+        inner_score_df = pd.DataFrame(inner_scores)
+        if str(tuning_metric) == "annual_mean_dz":
+            choice = select_hierarchical_candidate(inner_score_df)
+        else:
+            choice = inner_score_df.loc[inner_score_df["mean_validation_dz"].astype(float).idxmax()]
+        best_inner = float(choice["mean_validation_annual_dz"] if str(tuning_metric) == "annual_mean_dz" else choice["mean_validation_dz"])
+        best_cand = dict(choice["candidate"])
+        best_method = best_cand.get("selection_method", selection_method)
+        best_k = int(best_cand.get("k", k))
+        y_select = (pd.to_numeric(train_df[visit_col], errors="coerce").values == int(end_visit)).astype(int)
+        best_feats = select_features(best_method, train_df[feats_present], y_select, feats_present, k=best_k)
         selected_by_fold.append(list(best_feats))
         pred_df = _srm_fit_score_fold(
             train_df,
@@ -368,11 +461,18 @@ def srm_global_nested_loocv(
             ridge=float(best_cand.get("ridge", 0.0)),
             covariance_shrinkage=float(best_cand.get("covariance_shrinkage", 0.0)),
             z_clip=best_cand.get("z_clip"),
+            start_visit=int(start_visit),
+            end_visit=int(end_visit),
         )
         oof_parts.append(pred_df)
         chosen_rows.append({
             "outer_fold": outer_fold,
             "inner_d_score": best_inner,
+            "inner_tuning_metric": tuning_metric,
+            "inner_dz_v1_v2": choice.get("dz_v1_v2", np.nan),
+            "inner_dz_v2_v3": choice.get("dz_v2_v3", np.nan),
+            "inner_annual_interval_gap": choice.get("annual_interval_gap", np.nan),
+            "inner_p_progression": choice.get("p_progression", np.nan),
             "n_features": len(best_feats),
             **best_cand,
         })
@@ -404,7 +504,68 @@ def srm_global_nested_loocv(
         "split_group_col": resolved_split_group_col,
         "n_split_groups": int(len(split_groups)),
         "inner_folds": int(inner_folds),
+        "start_visit": int(start_visit),
+        "end_visit": int(end_visit),
+        "tuning_metric": tuning_metric,
     }
 
 
-__all__ = ["SRMGlobalLinear", "srm_global_loocv", "srm_global_nested_loocv"]
+def srm_global_repeated_group_cv(
+    df_long: pd.DataFrame,
+    feature_cols: Sequence[str],
+    subject_col: str,
+    visit_col: str = "visit",
+    *,
+    n_splits: int = 5,
+    n_repeats: int = 10,
+    random_seed: int = 42,
+    **kwargs,
+) -> dict:
+    """Run repeated grouped outer CV by reusing the fold-safe SRM evaluator."""
+    rows = []
+    oof_parts = []
+    selected = []
+    for repeat in range(1, int(n_repeats) + 1):
+        res = srm_global_loocv(
+            df_long,
+            feature_cols,
+            subject_col,
+            visit_col=visit_col,
+            cv_n_splits=int(n_splits),
+            random_seed=random_seed + repeat - 1,
+            **kwargs,
+        )
+        rows.append({
+            "repeat": repeat,
+            "d_score": res["d_score"],
+            "srm": res["srm"],
+            "n_subjects": res["n_subjects"],
+            "d_ci_low": res["d_ci_low"],
+            "d_ci_high": res["d_ci_high"],
+            "cv_n_splits": res["cv_n_splits"],
+            "start_visit": res.get("start_visit", 1),
+            "end_visit": res.get("end_visit", 2),
+        })
+        if not res["oof_df"].empty:
+            tmp = res["oof_df"].copy()
+            tmp["repeat"] = repeat
+            oof_parts.append(tmp)
+        selected.extend(res["selected_features_by_fold"])
+    summary = pd.DataFrame(rows)
+    return {
+        "summary_df": summary,
+        "oof_df": pd.concat(oof_parts, ignore_index=True) if oof_parts else pd.DataFrame(),
+        "selected_features_by_fold": selected,
+        "mean_d_score": float(summary["d_score"].mean()) if not summary.empty else np.nan,
+        "se_d_score": float(summary["d_score"].std(ddof=1) / np.sqrt(len(summary))) if len(summary) > 1 else np.nan,
+        "n_repeats": int(n_repeats),
+        "n_splits": int(n_splits),
+    }
+
+
+__all__ = [
+    "SRMGlobalLinear",
+    "srm_global_loocv",
+    "srm_global_nested_loocv",
+    "srm_global_repeated_group_cv",
+]

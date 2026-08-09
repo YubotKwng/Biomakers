@@ -25,7 +25,7 @@ the paired progression effect-size calculation used by the modelling pipeline.
 """
 from __future__ import annotations
 
-from typing import Iterable, Mapping, Tuple
+from typing import Callable, Iterable, Mapping, Tuple
 
 import numpy as np
 import pandas as pd
@@ -154,6 +154,11 @@ def compute_cohens_d(deltas) -> dict:
     return {"d": d, "n": n, "mean": mean, "sd": sd}
 
 
+def paired_cohens_dz(delta) -> float:
+    """Canonical paired Cohen's d_z on a vector of within-subject deltas."""
+    return float(compute_cohens_d(delta)["d"])
+
+
 def compute_srm(deltas) -> dict:
     """SRM on a delta vector — same formula as Cohen's d for paired data."""
     out = compute_cohens_d(deltas)
@@ -193,6 +198,118 @@ def bootstrap_ci_d(
         float(np.percentile(boot, 2.5)),
         float(np.percentile(boot, 97.5)),
     )
+
+
+def probability_positive_change(delta) -> float:
+    """Fraction of finite paired deltas that are greater than zero."""
+    delta = _as_float_array(delta)
+    delta = delta[np.isfinite(delta)]
+    if len(delta) == 0:
+        return np.nan
+    return float(np.mean(delta > 0))
+
+
+def bootstrap_paired_metric(
+    deltas,
+    metric_fn: Callable,
+    n_boot: int = 1000,
+    seed: int = 42,
+) -> dict:
+    """Subject-level bootstrap for a paired-delta metric function."""
+    vals = _as_float_array(deltas)
+    vals = vals[np.isfinite(vals)]
+    n = int(len(vals))
+    point = metric_fn(vals) if n else np.nan
+    if isinstance(point, Mapping):
+        point_value = next(iter(point.values()))
+    else:
+        point_value = point
+    if n < 2:
+        return {"point": float(point_value) if np.isfinite(point_value) else np.nan, "ci_low": np.nan, "ci_high": np.nan, "n": n}
+
+    rng = np.random.default_rng(seed)
+    boot = []
+    for _ in range(int(n_boot)):
+        sample = vals[rng.integers(0, n, size=n)]
+        value = metric_fn(sample)
+        if isinstance(value, Mapping):
+            value = next(iter(value.values()))
+        if np.isfinite(value):
+            boot.append(float(value))
+    if len(boot) < 10:
+        return {"point": float(point_value), "ci_low": np.nan, "ci_high": np.nan, "n": n}
+    boot_arr = np.asarray(boot, dtype=float)
+    return {
+        "point": float(point_value),
+        "ci_low": float(np.percentile(boot_arr, 2.5)),
+        "ci_high": float(np.percentile(boot_arr, 97.5)),
+        "n": n,
+    }
+
+
+def compute_longitudinal_deltas(
+    scores: pd.DataFrame,
+    start_visit,
+    end_visit,
+    *,
+    subject_col: str = "subject_id",
+    visit_col: str = "visit",
+    score_col: str = "score",
+    time_col: str | None = "time_years",
+    annualise: bool = False,
+) -> pd.DataFrame:
+    """Return subject-level score deltas for an observed visit interval."""
+    required = {subject_col, visit_col, score_col}
+    missing = required - set(scores.columns)
+    if missing:
+        raise KeyError(f"scores missing required columns: {sorted(missing)}")
+
+    def _norm_visit(v):
+        text = str(v).strip().upper()
+        if text.startswith("V"):
+            return text
+        try:
+            return f"V{int(float(text))}"
+        except ValueError:
+            return text
+
+    start_label = _norm_visit(start_visit)
+    end_label = _norm_visit(end_visit)
+    tmp = scores.copy()
+    tmp["_visit_label"] = tmp[visit_col].map(_norm_visit)
+    start = tmp[tmp["_visit_label"] == start_label].drop_duplicates(subject_col)
+    end = tmp[tmp["_visit_label"] == end_label].drop_duplicates(subject_col)
+    merged = start.merge(
+        end,
+        on=subject_col,
+        how="inner",
+        suffixes=("_start", "_end"),
+        validate="one_to_one",
+    )
+    out = pd.DataFrame({
+        subject_col: merged[subject_col],
+        "start_visit": start_label,
+        "end_visit": end_label,
+        "z_start": pd.to_numeric(merged[f"{score_col}_start"], errors="coerce"),
+        "z_end": pd.to_numeric(merged[f"{score_col}_end"], errors="coerce"),
+    })
+    out["delta"] = out["z_end"] - out["z_start"]
+
+    if time_col and f"{time_col}_start" in merged.columns and f"{time_col}_end" in merged.columns:
+        out["elapsed_years"] = (
+            pd.to_numeric(merged[f"{time_col}_end"], errors="coerce")
+            - pd.to_numeric(merged[f"{time_col}_start"], errors="coerce")
+        )
+    else:
+        visit_time = {"V1": 0.0, "V2": 1.0, "V3": 2.0}
+        out["elapsed_years"] = visit_time.get(end_label, np.nan) - visit_time.get(start_label, np.nan)
+
+    if annualise:
+        elapsed = pd.to_numeric(out["elapsed_years"], errors="coerce")
+        out["annualised_delta"] = out["delta"] / elapsed.replace(0, np.nan)
+    else:
+        out["annualised_delta"] = np.nan
+    return out
 
 
 def _infer_pair_type(df: pd.DataFrame) -> pd.Series:
@@ -408,9 +525,13 @@ __all__ = [
     "r2",
     "paired_ttest",
     "compute_cohens_d",
+    "paired_cohens_dz",
     "compute_srm",
     "paired_deltas_from_long",
     "bootstrap_ci_d",
+    "bootstrap_paired_metric",
+    "probability_positive_change",
+    "compute_longitudinal_deltas",
     "clinical_change_effect_sizes",
     "compute_cohens_d_from_oof",
     "reference_effect_sizes",

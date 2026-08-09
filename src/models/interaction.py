@@ -35,6 +35,7 @@ from sklearn.linear_model import ElasticNet
 from ..config import Config, DEFAULT_CONFIG
 from ..eval.cv import group_kfold_indices
 from ..eval.metrics import paired_cohens_d
+from ..eval.model_selection import select_hierarchical_candidate
 from ..features.interactions import expand_interactions
 
 
@@ -158,10 +159,11 @@ class InteractionLinearComposite:
         else:
             groups = np.asarray(cv_group_id)[rows_v1]
 
-        best = (-np.inf, None, None)
+        candidates = []
         for a in alpha_grid:
             for l1 in l1_ratio_grid:
                 fold_ds = []
+                validation_rows = []
                 for tr_idx, va_idx in group_kfold_indices(
                     groups, n_splits=cfg.interaction_inner_cv_splits, seed=cfg.random_state
                 ):
@@ -172,12 +174,52 @@ class InteractionLinearComposite:
                         if len(delta_scores) >= 2 else float("nan")
                     if np.isfinite(d):
                         fold_ds.append(d)
-                mean_d = float(np.mean(fold_ds)) if fold_ds else float("-inf")
-                if mean_d > best[0]:
-                    best = (mean_d, float(a), float(l1))
-        if best[1] is None or best[2] is None:
+                    for sid, score in zip(common_subjects[va_idx], delta_scores):
+                        interval = (
+                            "V1->V2" if "V1V2" in str(sid).upper()
+                            else "V2->V3" if "V2V3" in str(sid).upper()
+                            else np.nan
+                        )
+                        validation_rows.append({"pair_id": sid, "interval": interval, "delta_score": float(score)})
+                val = pd.DataFrame(validation_rows)
+                if not val.empty and {"V1->V2", "V2->V3"} <= set(val["interval"].dropna()):
+                    interval_stats = []
+                    for interval, part in val.dropna(subset=["interval"]).groupby("interval"):
+                        deltas = pd.to_numeric(part["delta_score"], errors="coerce").dropna().to_numpy(dtype=float)
+                        d_val = float(deltas.mean() / (deltas.std(ddof=1) + cfg.interaction_eps)) if len(deltas) >= 2 else np.nan
+                        interval_stats.append({
+                            "interval": interval,
+                            "d_z": d_val,
+                            "p_delta_positive": float(np.mean(deltas > 0)) if len(deltas) else np.nan,
+                        })
+                    interval_df = pd.DataFrame(interval_stats).set_index("interval")
+                    d12 = interval_df["d_z"].get("V1->V2", np.nan)
+                    d23 = interval_df["d_z"].get("V2->V3", np.nan)
+                    p12 = interval_df["p_delta_positive"].get("V1->V2", np.nan)
+                    p23 = interval_df["p_delta_positive"].get("V2->V3", np.nan)
+                    mean_d = float(np.mean([d12, d23])) if np.isfinite(d12) and np.isfinite(d23) else float("-inf")
+                    gap = float(abs(d12 - d23)) if np.isfinite(d12) and np.isfinite(d23) else np.nan
+                    p_prog = float(np.nanmean([p12, p23]))
+                else:
+                    d12 = d23 = gap = p_prog = np.nan
+                    mean_d = float("-inf")
+                se_d = float(np.std(fold_ds, ddof=1) / np.sqrt(len(fold_ds))) if len(fold_ds) > 1 else 0.0
+                candidates.append({
+                    "alpha": float(a),
+                    "l1_ratio": float(l1),
+                    "mean_validation_annual_dz": mean_d,
+                    "mean_validation_dz": mean_d,
+                    "dz_v1_v2": d12,
+                    "dz_v2_v3": d23,
+                    "annual_interval_gap": gap,
+                    "p_progression": p_prog,
+                    "feature_count": Delta.shape[1],
+                    "se_validation_dz": se_d,
+                })
+        if not candidates:
             return float(cfg.interaction_en_alpha), float(cfg.interaction_en_l1_ratio)
-        return float(best[1]), float(best[2])
+        choice = select_hierarchical_candidate(pd.DataFrame(candidates))
+        return float(choice["alpha"]), float(choice["l1_ratio"])
 
     # ------------------------------------------------------------------
     # Public API

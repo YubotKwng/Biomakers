@@ -140,6 +140,13 @@ def feature_stability_report(
     ).reset_index(drop=True)
 
 
+def select_one_se_candidate(results: pd.DataFrame) -> pd.Series:
+    """Backward-compatible alias for hierarchical one-SE model selection."""
+    from ..eval.model_selection import select_hierarchical_candidate
+
+    return select_hierarchical_candidate(results)
+
+
 # ---------------------------------------------------------------------------
 # Descriptive registry helper for multi-source MI rankings.
 # ---------------------------------------------------------------------------
@@ -208,6 +215,7 @@ __all__ = [
     "select_topk_by_group",
     "select_features",
     "feature_stability_report",
+    "select_one_se_candidate",
     "_global_rank",
     "make_selection_fn",
 ]

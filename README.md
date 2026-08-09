@@ -20,7 +20,9 @@ Paired, leakage-safe modelling pipeline for evaluating MRI-derived progression s
 ## Project Idea
 
 The pipeline turns TRACK-FA imaging and clinical visit data into paired progression intervals such as `V1V2` and `V2V3`.
-Models learn a scalar MRI score per visit, then evaluation uses:
+Models learn a scalar MRI score per visit. Training and tuning target
+12-month longitudinal sensitivity using the two observed annual intervals:
+`V1->V2` and `V2->V3`.
 
 ```text
 delta = score(visit2) - score(visit1)
@@ -28,6 +30,19 @@ d_z   = mean(delta) / std(delta, ddof=1)
 ```
 
 Clinical scales such as FARS and SARA are used as benchmarks, not imaging-model inputs.
+
+For hyperparameter tuning, candidate models are evaluated by:
+
+```text
+S_annual = (d_z(V1->V2) + d_z(V2->V3)) / 2
+```
+
+The two annual intervals are kept separate, not concatenated as independent
+patients. Candidate selection uses a one-standard-error style hierarchy:
+near-optimal annual sensitivity first, then smaller `|d12-d23|`, higher
+`P(delta > 0)`, fewer selected features, and available feature/coefficient
+stability diagnostics. `V1->V3` is reported as 24-month cumulative sensitivity,
+not as the one-year tuning objective.
 
 ## Quick Start
 
@@ -84,9 +99,11 @@ Raw data paths are configured in `src/config.py`.
 > **Leakage rule:** `pair_id` identifies one progression interval, while `subject` is the split group.
 > In Leave-One-Out or grouped cross-validation, all intervals for the same participant stay together.
 
-- Primary metric: paired Cohen's `d_z` / SRM.
+- Primary tuning metric: mean annual validation `d_z` from held-out `V1->V2` and `V2->V3`.
+- Primary final evaluation: genuine OOF `V1->V2` and `V2->V3` `d_z`, bootstrap CI, N, and `P(delta > 0)`.
+- Secondary final evaluation: OOF `V1->V3` as 24-month cumulative sensitivity.
 - Confidence intervals: bootstrap over paired deltas.
-- Feature selection: fit inside each training fold only.
+- Feature selection and hyperparameter tuning: fit inside each relevant training fold only.
 - Clinical benchmarks: computed from adjacent changes only, e.g. `FARS2-FARS1` and `FARS3-FARS2`.
 
 ## Configuration
