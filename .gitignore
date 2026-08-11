@@ -1,4 +1,6 @@
 results/*
+scripts/*
+tests/*
 !results/.gitkeep
 /data/
 !src/data/
@@ -7,15 +9,6 @@ __pycache__/
 *.pyc
 CONTEXT_AND_STRUCTURE.md
 .vscode/settings.json
-
-scripts/optimize_models.py
-scripts/generate_optimization_evidence.py
-scripts/create_supervisor_optimization_deck.mjs
-*.pptx
-*.pptx.inspect.ndjson
-*.layout.json
-deck-montage.webp
-contact_sheet.png
 
 .pytest_cache/
 .coverage
