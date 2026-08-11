@@ -10,7 +10,11 @@ from __future__ import annotations
 import numpy as np
 
 from ..data.qc import _as_float_array
-from .ridge import predict_linear  # re-export for convenience
+
+
+def predict_linear(X, w, intercept=0.0):
+    """Predict from a linear model on already-preprocessed predictors."""
+    return _as_float_array(X) @ _as_float_array(w) + float(intercept)
 
 
 def soft_threshold(z, g):

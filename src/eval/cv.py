@@ -1111,25 +1111,18 @@ def tune_and_run_regression_loocv(
 ):
     """Run subject-grouped regression with inner-CV hyperparameter tuning.
 
-    Supports ElasticNet coordinate descent, Ridge, and PLS backends for
-    clinical-score or change-score prediction under subject-level validation.
-    Uses LOO by default, or grouped K-fold via ``cv_n_splits``. Inner
-    hyperparameters can be selected by RMSE or, when visit rows are available,
-    by the same paired Cohen's d_z used for progression reporting.
+    Supports ElasticNet as the retained clinical-score prediction comparator
+    under subject-level validation. Uses LOO by default, or grouped K-fold via
+    ``cv_n_splits``. Inner hyperparameters can be selected by RMSE or, when
+    visit rows are available, by the same paired Cohen's d_z used for
+    progression reporting.
     ``z_clip`` optionally clips fold-standardised imaging values before
-    fitting each linear backend.
+    fitting the ElasticNet backend.
     """
     from .metrics import r2 as _r2, rmse as _rmse  # local alias
 
-    try:
-        from ..models.elasticnet_cd import fit_elasticnet_cd
-        from ..models.pls import fit_pls1_nipals
-        from ..models.ridge import fit_ridge, predict_linear
-    except ImportError as exc:  # pragma: no cover - optional model backend wiring
-        raise ImportError(
-            "tune_and_run_regression_loocv requires ridge, elasticnet_cd, "
-            "and pls model backends."
-        ) from exc
+    if model_kind != "elasticnet":
+        raise ValueError("Clinical-score regression comparator is now ElasticNet-only")
 
     feats_present = [f for f in feature_cols if f in df.columns]
     if len(feats_present) == 0:
@@ -1161,9 +1154,6 @@ def tune_and_run_regression_loocv(
         alphas = np.array([0.01, 0.1, 1.0, 10.0])
     if l1_ratios is None:
         l1_ratios = [0.1, 0.5, 0.9]
-    if n_components_list is None:
-        n_components_list = [1, 2, 3]
-
     groups = sub[resolved_split_group_col].values
     use_kfold = cv_n_splits is not None and 1 < int(cv_n_splits) < len(split_groups)
     splits = (
@@ -1222,17 +1212,15 @@ def tune_and_run_regression_loocv(
                 Xt, Xv = X_train_s[tr_idx], X_train_s[va_idx]
                 yt, yv = y_train[tr_idx], y_train[va_idx]
 
-                if model_kind == "ridge":
-                    w = fit_ridge(Xt, yt, alpha=params["alpha"])
-                    pred = predict_linear(Xv, w)
-                elif model_kind == "elasticnet":
-                    w, b0 = fit_elasticnet_cd(Xt, yt, alpha=params["alpha"], l1_ratio=params["l1_ratio"])
-                    pred = predict_linear(Xv, w, intercept=b0)
-                elif model_kind == "pls":
-                    coef, intercept = fit_pls1_nipals(Xt, yt, n_components=params["n_components"])
-                    pred = predict_linear(Xv, coef, intercept=intercept)
-                else:
-                    raise ValueError("unknown model_kind")
+                model = ElasticNet(
+                    alpha=params["alpha"],
+                    l1_ratio=params["l1_ratio"],
+                    fit_intercept=True,
+                    max_iter=5000,
+                    random_state=random_seed,
+                )
+                model.fit(Xt, yt)
+                pred = model.predict(Xv)
 
                 rmses.append(_rmse(yv, pred))
                 if selection_metric in {"d", "cohens_d", "d_score"}:
@@ -1298,17 +1286,7 @@ def tune_and_run_regression_loocv(
                 "feature_count": len(feats),
             }
 
-        candidates = []
-        if model_kind == "ridge":
-            candidates = [{"alpha": float(a)} for a in alphas]
-        elif model_kind == "elasticnet":
-            candidates = [{"alpha": float(a), "l1_ratio": float(l)} for a in alphas for l in l1_ratios]
-        elif model_kind == "pls":
-            max_k = min(int(max(n_components_list)), len(feats), max(1, len(train_df) - 1))
-            cand = [k for k in n_components_list if 1 <= k <= max_k]
-            candidates = [{"n_components": int(k)} for k in cand]
-        else:
-            raise ValueError("unknown model_kind")
+        candidates = [{"alpha": float(a), "l1_ratio": float(l)} for a in alphas for l in l1_ratios]
 
         candidate_scores = pd.DataFrame([score_candidate(params) for params in candidates])
         if candidate_scores.empty:
@@ -1331,15 +1309,15 @@ def tune_and_run_regression_loocv(
         if best_params is None:
             continue
 
-        if model_kind == "ridge":
-            w = fit_ridge(X_train_s, y_train, alpha=best_params["alpha"])
-            pred = predict_linear(X_test_s, w)
-        elif model_kind == "elasticnet":
-            w, b0 = fit_elasticnet_cd(X_train_s, y_train, alpha=best_params["alpha"], l1_ratio=best_params["l1_ratio"])
-            pred = predict_linear(X_test_s, w, intercept=b0)
-        else:  # pls
-            coef, intercept = fit_pls1_nipals(X_train_s, y_train, n_components=best_params["n_components"])
-            pred = predict_linear(X_test_s, coef, intercept=intercept)
+        model = ElasticNet(
+            alpha=best_params["alpha"],
+            l1_ratio=best_params["l1_ratio"],
+            fit_intercept=True,
+            max_iter=5000,
+            random_state=random_seed,
+        )
+        model.fit(X_train_s, y_train)
+        pred = model.predict(X_test_s)
 
         visits_test = test_df[visit_col].values if has_visit else np.arange(len(y_test))
         subjects_test = test_df[subject_col].values
