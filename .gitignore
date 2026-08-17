@@ -1,6 +1,7 @@
 results/*
 scripts/*
 tests/*
+!tests/*.py
 !results/.gitkeep
 /data/
 !src/data/

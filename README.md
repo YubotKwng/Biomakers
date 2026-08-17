@@ -208,6 +208,22 @@ Candidate selection uses a one-standard-error style hierarchy:
 4. prefer fewer selected features;
 5. prefer more stable feature selection and coefficient signs where available.
 
+Feature-selection method is now treated as a model-selection component rather
+than only a separate audit. The active candidate family can include:
+
+| Selection method | Objective | Status |
+|---|---|---|
+| `none` | Full prespecified MRI feature panel. | Required reference candidate. |
+| `mi_visit` | Historical mutual information ranking against visit/progression label; `mi` remains a compatibility alias. | Sensitivity comparator. |
+| `mml` | Existing MML linear-regression complexity score against the visit-label target. | Generic complexity comparator; not progression-aligned MML. |
+| `progression_univariate` | Feature-wise annual paired effects: V1->V2, V2->V3, mean annual d_z, and interval gap. | Progression-aligned filter. |
+| `progression_mrmr` | Progression relevance minus absolute-correlation redundancy penalty. | Progression-aware redundancy filter. |
+| `sparse_srm` | Embedded sparse SRM-style selection from interval-balanced annual change statistics with ElasticNet-style shrinkage. | Sparse progression selector. |
+
+All non-`none` selectors are fitted inside the relevant training fold only.
+Selection frequency, Jaccard stability, and represented MRI domains are
+displayed for review but are not used as causal feature-importance claims.
+
 The tuning notebooks display:
 
 - all tested parameter values;
@@ -264,6 +280,7 @@ Primary 12-month evaluation:
 |---|---|
 | 12-month sensitivity V1->V2 | d_z, 95% bootstrap CI, N, P(delta > 0). |
 | 12-month sensitivity V2->V3 | d_z, 95% bootstrap CI, N, P(delta > 0). |
+| 12-month pooled annual sensitivity | Pooled V1->V2 + V2->V3 d_z, 95% bootstrap CI, N, P(delta > 0), using subject-grouped OOF annual pair predictions. |
 
 Secondary evaluation:
 
@@ -292,7 +309,8 @@ results/  exported tables/logs
 |---|---|
 | `trackfa_merge.ipynb` | Data merge, processed exports, visit pattern, missingness, site/QC audit. |
 | `feature_selection_pipeline.ipynb` | Feature-selection comparison and tuning-review tables. |
-| `srm_composite.ipynb` | Main SRM Global Linear and Patient-Adaptive composite models. |
+| `srm_composite.ipynb` | Main SRM Global Linear composite model. |
+| `interaction_term.ipynb` | Patient-Adaptive interaction model using MRI features plus demographic/genetic modulators. |
 | `comparator_table.ipynb` | LDA and regression comparator models. |
 | `progression_dl.ipynb` | Exploratory deep-learning models; skips gracefully if PyTorch is unavailable. |
 | `model_performance.ipynb` | Final consolidated performance display and CSV export. |
@@ -317,6 +335,8 @@ Current out-of-fold summary for the main SRM Global Linear Composite:
 | V1->V2 P(delta > 0) | 0.88 |
 | V2->V3 Cohen's d_z | 0.43 |
 | V2->V3 P(delta > 0) | 0.67 |
+| Pooled annual Cohen's d_z | 0.92 |
+| Pooled annual P(delta > 0) | 0.84 |
 | V1->V3 cumulative Cohen's d_z | 1.33 |
 
 `P(delta > 0)` measures the proportion of participants whose composite score changed in the expected disease-progression direction. A value of 0.88 means that approximately 88% of participants changed in the expected direction for the stronger annual interval.
@@ -352,9 +372,10 @@ Run notebooks in this order:
 1. notebooks/trackfa_merge.ipynb
 2. notebooks/feature_selection_pipeline.ipynb
 3. notebooks/srm_composite.ipynb
-4. notebooks/comparator_table.ipynb
-5. notebooks/progression_dl.ipynb
-6. notebooks/model_performance.ipynb
+4. notebooks/interaction_term.ipynb
+5. notebooks/comparator_table.ipynb
+6. notebooks/progression_dl.ipynb
+7. notebooks/model_performance.ipynb
 ```
 
 Run quick checks:
