@@ -651,7 +651,16 @@ def lda_loocv(
             feats = selection_fn(train_df)
         elif selection_method != "none":
             y_select = (train_df[visit_col].values == 2).astype(int)
-            feats = select_features(selection_method, train_df[feats_present], y_select, feats_present, k=k)
+            feats = select_features(
+                selection_method,
+                train_df[feats_present],
+                y_select,
+                feats_present,
+                k=k,
+                train_frame=train_df,
+                subject_col=subject_col,
+                visit_col=visit_col,
+            )
         feats = [f for f in feats if f in train_df.columns]
         selected_features_by_fold.append(list(feats))
         if len(feats) == 0:
@@ -854,7 +863,20 @@ def lda_nested_loocv(
                 inner_val = train_df.iloc[inner_val_idx].copy()
                 y_inner_select = (inner_train[visit_col].values == 2).astype(int)
                 inner_feats = (
-                    select_features(cand_method, inner_train[feats_present], y_inner_select, feats_present, k=cand_k)
+                    select_features(
+                        cand_method,
+                        inner_train[feats_present],
+                        y_inner_select,
+                        feats_present,
+                        k=cand_k,
+                        train_frame=inner_train,
+                        subject_col=subject_col,
+                        visit_col=visit_col,
+                        mrmr_redundancy_lambda=float(cand.get("mrmr_redundancy_lambda", 0.25)),
+                        sparse_lambda=float(cand.get("sparse_lambda", 0.01)),
+                        sparse_alpha=float(cand.get("sparse_alpha", 0.5)),
+                        sparse_tolerance=float(cand.get("sparse_tolerance", 1e-8)),
+                    )
                     if cand_method != "none"
                     else list(feats_present)
                 )
@@ -923,7 +945,20 @@ def lda_nested_loocv(
         best_k = int(best_cand.get("k", k))
         y_select = (train_df[visit_col].values == 2).astype(int)
         best_feats = (
-            select_features(best_method, train_df[feats_present], y_select, feats_present, k=best_k)
+            select_features(
+                best_method,
+                train_df[feats_present],
+                y_select,
+                feats_present,
+                k=best_k,
+                train_frame=train_df,
+                subject_col=subject_col,
+                visit_col=visit_col,
+                mrmr_redundancy_lambda=float(best_cand.get("mrmr_redundancy_lambda", 0.25)),
+                sparse_lambda=float(best_cand.get("sparse_lambda", 0.01)),
+                sparse_alpha=float(best_cand.get("sparse_alpha", 0.5)),
+                sparse_tolerance=float(best_cand.get("sparse_tolerance", 1e-8)),
+            )
             if best_method != "none"
             else list(feats_present)
         )
@@ -1042,7 +1077,16 @@ def interaction_loocv(
         test_df = sub.iloc[test_idx].copy()
 
         y_select = (train_df[visit_col].values == 2).astype(int)
-        feats = select_features(selection_method, train_df[feats_present], y_select, feats_present, k=k)
+        feats = select_features(
+            selection_method,
+            train_df[feats_present],
+            y_select,
+            feats_present,
+            k=k,
+            train_frame=train_df,
+            subject_col=subject_col,
+            visit_col=visit_col,
+        )
         feats = [f for f in feats if f in train_df.columns]
         selected_features_by_fold.append(list(feats))
         if len(feats) == 0:
@@ -1176,7 +1220,16 @@ def tune_and_run_regression_loocv(
             if not has_visit:
                 raise ValueError("selection_method requires visit_col to be present in df")
             y_select = (train_df[visit_col].values == 2).astype(int)
-            feats = select_features(selection_method, train_df[feats_present], y_select, feats_present, k=k)
+            feats = select_features(
+                selection_method,
+                train_df[feats_present],
+                y_select,
+                feats_present,
+                k=k,
+                train_frame=train_df,
+                subject_col=subject_col,
+                visit_col=visit_col,
+            )
         feats = [f for f in feats if f in train_df.columns]
         selected_features_by_fold.append(list(feats))
         if len(feats) == 0:

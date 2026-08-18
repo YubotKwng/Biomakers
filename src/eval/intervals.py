@@ -15,6 +15,17 @@ from .metrics import (
 )
 
 
+INTERVAL_SUMMARY_COLUMNS = [
+    "interval",
+    "n_pairs",
+    "mean_change",
+    "sd_change",
+    "d_z",
+    "d_z_ci_low",
+    "d_z_ci_high",
+    "p_delta_positive",
+]
+
 DEFAULT_INTERVALS = (
     ("V1", "V3", "V1->V3", False),
     ("V1", "V2", "V1->V2", True),
@@ -94,10 +105,7 @@ def adjacent_pair_interval_effect_summary(
 
     tmp = scores[[pair_col, visit_col, score_col]].dropna().copy()
     if tmp.empty:
-        return pd.DataFrame(columns=[
-            "interval", "n_pairs", "mean_change", "sd_change", "d_z",
-            "d_z_ci_low", "d_z_ci_high", "p_delta_positive",
-        ])
+        return pd.DataFrame(columns=INTERVAL_SUMMARY_COLUMNS)
     tmp["_interval"] = (
         tmp[pair_col].astype(str).str.upper().str.extract(r"(V\d+V\d+)", expand=False)
         .map({"V1V2": "V1->V2", "V2V3": "V2->V3"})
@@ -125,6 +133,59 @@ def adjacent_pair_interval_effect_summary(
             "p_delta_positive": probability_positive_change(deltas),
         })
     return pd.DataFrame(rows)
+
+
+def pooled_adjacent_pair_effect_summary(
+    scores: pd.DataFrame,
+    *,
+    pair_col: str = "pair_id",
+    visit_col: str = "visit",
+    score_col: str = "score",
+    interval_label: str = "V1->V2 + V2->V3",
+    n_boot: int = 1000,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """Summarise pooled annual d_z across V1V2 and V2V3 OOF pair deltas.
+
+    This is an evaluation-only pooled annual metric. It does not alter the CV
+    split: upstream OOF predictions must still be generated with participant
+    grouping so all annual intervals from the same participant stay on the same
+    side of each train/test split.
+    """
+    required = {pair_col, visit_col, score_col}
+    missing = required - set(scores.columns)
+    if missing:
+        raise KeyError(f"scores missing required columns: {sorted(missing)}")
+
+    tmp = scores[[pair_col, visit_col, score_col]].dropna().copy()
+    if tmp.empty:
+        return pd.DataFrame(columns=INTERVAL_SUMMARY_COLUMNS)
+    tmp["_interval"] = (
+        tmp[pair_col]
+        .astype(str)
+        .str.upper()
+        .str.extract(r"(V\d+V\d+)", expand=False)
+    )
+    tmp = tmp[tmp["_interval"].isin(["V1V2", "V2V3"])].copy()
+    paired = (
+        tmp.sort_values([pair_col, visit_col])
+        .groupby(pair_col)[score_col]
+        .apply(list)
+    )
+    paired = paired[paired.map(len) == 2]
+    deltas = paired.map(lambda x: float(x[1] - x[0])).to_numpy(dtype=float)
+    effect = compute_cohens_d(deltas)
+    boot = bootstrap_paired_metric(deltas, paired_cohens_dz, n_boot=n_boot, seed=seed)
+    return pd.DataFrame([{
+        "interval": interval_label,
+        "n_pairs": effect["n"],
+        "mean_change": effect["mean"],
+        "sd_change": effect["sd"],
+        "d_z": effect["d"],
+        "d_z_ci_low": boot["ci_low"],
+        "d_z_ci_high": boot["ci_high"],
+        "p_delta_positive": probability_positive_change(deltas),
+    }])
 
 
 def annual_tuning_diagnostics(
@@ -171,14 +232,20 @@ def annual_tuning_diagnostics(
         "dz_v1_v2": float(d12) if np.isfinite(d12) else np.nan,
         "dz_v2_v3": float(d23) if np.isfinite(d23) else np.nan,
         "mean_validation_annual_dz": float(np.mean(annual_vals)) if annual_vals else np.nan,
-        "annual_interval_gap": float(abs(d12 - d23)) if np.isfinite(d12) and np.isfinite(d23) else np.nan,
+        "annual_interval_gap": (
+            float(abs(d12 - d23))
+            if np.isfinite(d12) and np.isfinite(d23)
+            else np.nan
+        ),
         "p_progression": float(np.mean(p_vals)) if p_vals else np.nan,
     }
 
 
 __all__ = [
     "DEFAULT_INTERVALS",
+    "INTERVAL_SUMMARY_COLUMNS",
     "adjacent_pair_interval_effect_summary",
     "annual_tuning_diagnostics",
     "interval_effect_summary",
+    "pooled_adjacent_pair_effect_summary",
 ]

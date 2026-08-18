@@ -77,7 +77,10 @@ def audit_visit_patterns(
             cross[visit] = 0
     cross = cross[visit_labels].astype(bool)
 
-    pattern_series = cross.apply(lambda r: "".join("1" if bool(r[v]) else "0" for v in visit_labels), axis=1)
+    pattern_series = cross.apply(
+        lambda row: "".join("1" if bool(row[visit]) else "0" for visit in visit_labels),
+        axis=1,
+    )
     pattern_order = ["111", "110", "101", "011", "100", "010", "001"]
     pattern_counts = {p: int((pattern_series == p).sum()) for p in pattern_order}
 
@@ -158,12 +161,83 @@ def analysis_population_counts(
     return pd.DataFrame(rows)
 
 
+def modelling_pair_count_table(
+    pairs: pd.DataFrame,
+    *,
+    patient_col: str = "patient_id",
+    expected: dict[str, int] | None = None,
+) -> pd.DataFrame:
+    """Return canonical modelling-cohort counts from annual pair identifiers.
+
+    ``trackfa_pairs_drop3poms.csv`` stores adjacent intervals as identifiers
+    such as ``AAN001_V1V2`` and ``AAN001_V2V3``. The 24-month V1->V3 count is
+    therefore the number of subjects with both annual rows, not a separate row
+    count in the paired CSV.
+    """
+    if patient_col not in pairs.columns:
+        raise KeyError(f"pairs missing required column {patient_col!r}")
+    parsed = pairs[patient_col].astype(str).str.extract(
+        r"(?P<subject>.+)_(?P<pair_type>V1V2|V2V3)$"
+    )
+    if parsed.isna().any().any():
+        examples = pairs.loc[parsed.isna().any(axis=1), patient_col].head(10).tolist()
+        raise ValueError(f"Could not parse annual pair identifiers: {examples}")
+
+    subjects_v12 = set(parsed.loc[parsed["pair_type"].eq("V1V2"), "subject"])
+    subjects_v23 = set(parsed.loc[parsed["pair_type"].eq("V2V3"), "subject"])
+    subjects_both = subjects_v12 & subjects_v23
+    counts = {
+        "N12": len(subjects_v12),
+        "N23": len(subjects_v23),
+        "N13": len(subjects_both),
+        "N123": len(subjects_both),
+    }
+    rows = [
+        {
+            "count": "N12",
+            "interval": "V1->V2",
+            "n": counts["N12"],
+            "definition": "subjects with a V1V2 annual pair row",
+        },
+        {
+            "count": "N23",
+            "interval": "V2->V3",
+            "n": counts["N23"],
+            "definition": "subjects with a V2V3 annual pair row",
+        },
+        {
+            "count": "N13",
+            "interval": "V1->V3",
+            "n": counts["N13"],
+            "definition": "subjects with both V1V2 and V2V3 annual pair rows",
+        },
+        {
+            "count": "N123",
+            "interval": "V1,V2,V3",
+            "n": counts["N123"],
+            "definition": "subjects represented across all three visits via both annual pair rows",
+        },
+    ]
+    out = pd.DataFrame(rows)
+    if expected is not None:
+        expected = dict(expected)
+        mismatches = {
+            key: (counts.get(key), value)
+            for key, value in expected.items()
+            if counts.get(key) != value
+        }
+        if mismatches:
+            raise ValueError(f"Modelling pair-count mismatch: {mismatches}")
+    return out
+
+
 __all__ = [
     "VISIT_TIME",
     "VISIT_PATTERN_MEANINGS",
     "add_visit_time",
     "analysis_population_counts",
     "audit_visit_patterns",
+    "modelling_pair_count_table",
     "normalise_visit_label",
     "visit_pattern_table",
 ]

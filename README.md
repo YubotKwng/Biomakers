@@ -329,19 +329,25 @@ Current out-of-fold summary for the main SRM Global Linear Composite:
 
 | Metric | Current value |
 |---|---:|
-| V1->V2 Cohen's d_z | 1.20 |
-| V1->V2 95% CI | [1.00, 1.43] |
+| V1->V2 Cohen's d_z | 1.13 |
+| V1->V2 95% CI | [0.93, 1.40] |
 | V1->V2 N | 108 |
-| V1->V2 P(delta > 0) | 0.88 |
-| V2->V3 Cohen's d_z | 0.43 |
-| V2->V3 P(delta > 0) | 0.67 |
-| Pooled annual Cohen's d_z | 0.92 |
-| Pooled annual P(delta > 0) | 0.84 |
-| V1->V3 cumulative Cohen's d_z | 1.33 |
+| V1->V2 P(delta > 0) | 0.89 |
+| V2->V3 Cohen's d_z | 0.78 |
+| V2->V3 95% CI | [0.58, 1.02] |
+| V2->V3 N | 99 |
+| V2->V3 P(delta > 0) | 0.76 |
+| Pooled annual Cohen's d_z | 0.94 |
+| Pooled annual 95% CI | [0.78, 1.12] |
+| Pooled annual N | 207 |
+| Pooled annual P(delta > 0) | 0.83 |
+| V1->V3 cumulative Cohen's d_z | 1.46 |
+| V1->V3 95% CI | [1.24, 1.79] |
+| V1->V3 N | 90 |
 
-`P(delta > 0)` measures the proportion of participants whose composite score changed in the expected disease-progression direction. A value of 0.88 means that approximately 88% of participants changed in the expected direction for the stronger annual interval.
+`P(delta > 0)` measures the proportion of participants whose composite score changed in the expected disease-progression direction. A value of 0.89 means that approximately 89% of participants changed in the expected direction for the stronger annual interval.
 
-These results are preliminary and should be interpreted together with the model-selection table, annual interval consistency, clinical benchmarks, and remaining specificity analysis.
+These results keep SRM Global Linear as the primary model. Patient-Adaptive, LDA/regression, and deep-learning models remain comparator or exploratory analyses because their annual progression sensitivity is lower in the current out-of-fold results. These results are preliminary and should be interpreted together with the model-selection table, annual interval consistency, clinical benchmarks, and remaining specificity analysis.
 
 ## Code Map
 

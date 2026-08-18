@@ -122,6 +122,7 @@ def srm_global_loocv(
     split_group_col: str | None = None,
     start_visit: int = 1,
     end_visit: int = 2,
+    selection_params: dict | None = None,
 ) -> dict:
     """Run fold-safe subject-level validation for ``SRMGlobalLinear``.
 
@@ -178,7 +179,17 @@ def srm_global_loocv(
         # Feature selection is deliberately inside the outer loop: the held-out
         # participant group cannot influence MI/MML ranking or top-k choice.
         y_select = (pd.to_numeric(train_df[visit_col], errors="coerce").values == int(end_visit)).astype(int)
-        feats = select_features(selection_method, train_df[feats_present], y_select, feats_present, k=k)
+        feats = select_features(
+            selection_method,
+            train_df[feats_present],
+            y_select,
+            feats_present,
+            k=k,
+            train_frame=train_df,
+            subject_col=subject_col,
+            visit_col=visit_col,
+            **(selection_params or {}),
+        )
         selected_by_fold.append(list(feats))
 
         X_train = train_df[feats].values if feats else np.zeros((len(train_df), 0))
@@ -374,6 +385,13 @@ def srm_global_nested_loocv(
                     y_inner_select,
                     feats_present,
                     k=cand_k,
+                    train_frame=inner_train,
+                    subject_col=subject_col,
+                    visit_col=visit_col,
+                    mrmr_redundancy_lambda=float(cand.get("mrmr_redundancy_lambda", 0.25)),
+                    sparse_lambda=float(cand.get("sparse_lambda", 0.01)),
+                    sparse_alpha=float(cand.get("sparse_alpha", 0.5)),
+                    sparse_tolerance=float(cand.get("sparse_tolerance", 1e-8)),
                 )
                 inner_selected.append(list(inner_feats))
                 if not inner_feats:
@@ -450,7 +468,20 @@ def srm_global_nested_loocv(
         best_method = best_cand.get("selection_method", selection_method)
         best_k = int(best_cand.get("k", k))
         y_select = (pd.to_numeric(train_df[visit_col], errors="coerce").values == int(end_visit)).astype(int)
-        best_feats = select_features(best_method, train_df[feats_present], y_select, feats_present, k=best_k)
+        best_feats = select_features(
+            best_method,
+            train_df[feats_present],
+            y_select,
+            feats_present,
+            k=best_k,
+            train_frame=train_df,
+            subject_col=subject_col,
+            visit_col=visit_col,
+            mrmr_redundancy_lambda=float(best_cand.get("mrmr_redundancy_lambda", 0.25)),
+            sparse_lambda=float(best_cand.get("sparse_lambda", 0.01)),
+            sparse_alpha=float(best_cand.get("sparse_alpha", 0.5)),
+            sparse_tolerance=float(best_cand.get("sparse_tolerance", 1e-8)),
+        )
         selected_by_fold.append(list(best_feats))
         pred_df = _srm_fit_score_fold(
             train_df,

@@ -9,19 +9,63 @@ import pandas as pd
 
 PERFORMANCE_SPEC = pd.DataFrame(
     [
-        {"question": "12-month sensitivity V1->V2", "metric": "V1->V2 paired d_z, CI, N, P(delta>0)", "role": "Primary"},
-        {"question": "12-month sensitivity V2->V3", "metric": "V2->V3 paired d_z, CI, N, P(delta>0)", "role": "Primary temporal replication"},
-        {"question": "24-month cumulative sensitivity", "metric": "V1->V3 paired d_z", "role": "Secondary"},
+        {
+            "question": "12-month sensitivity V1->V2",
+            "metric": "V1->V2 paired d_z, CI, N, P(delta>0)",
+            "role": "Primary",
+        },
+        {
+            "question": "12-month sensitivity V2->V3",
+            "metric": "V2->V3 paired d_z, CI, N, P(delta>0)",
+            "role": "Primary temporal replication",
+        },
+        {
+            "question": "12-month pooled annual sensitivity",
+            "metric": "Pooled V1->V2 + V2->V3 paired d_z, CI, N, P(delta>0)",
+            "role": "Pooled annual diagnostic",
+        },
+        {
+            "question": "24-month cumulative sensitivity",
+            "metric": "V1->V3 paired d_z",
+            "role": "Secondary",
+        },
         {"question": "Direction consistency", "metric": "P(delta > 0)", "role": "Secondary"},
         {"question": "Robustness", "metric": "bootstrap CI for d_z", "role": "Primary uncertainty"},
-        {"question": "Better than clinical scale?", "metric": "d_z composite vs FARS/SARA", "role": "RQ1"},
-        {"question": "Better than MRI alone?", "metric": "vs strongest individual MRI feature", "role": "RQ1"},
-        {"question": "Disease specific?", "metric": "FRDA vs control change", "role": "Specificity"},
+        {
+            "question": "Better than clinical scale?",
+            "metric": "d_z composite vs FARS/SARA",
+            "role": "RQ1",
+        },
+        {
+            "question": "Better than MRI alone?",
+            "metric": "vs strongest individual MRI feature",
+            "role": "RQ1",
+        },
+        {
+            "question": "Disease specific?",
+            "metric": "FRDA vs control change",
+            "role": "Specificity",
+        },
         {"question": "Clinically meaningful?", "metric": "Spearman Z vs FARS/SARA", "role": "RQ3"},
-        {"question": "Tracks clinical change?", "metric": "Spearman delta Z vs delta FARS/SARA", "role": "Strong RQ3"},
-        {"question": "Feature robustness", "metric": "coefficient/sign/Jaccard stability", "role": "Robustness"},
+        {
+            "question": "Tracks clinical change?",
+            "metric": "Spearman delta Z vs delta FARS/SARA",
+            "role": "Strong RQ3",
+        },
+        {
+            "question": "Feature robustness",
+            "metric": "coefficient/sign/Jaccard stability",
+            "role": "Robustness",
+        },
     ]
 )
+
+CANONICAL_PAIR_COUNTS = {
+    "V1->V2": 108,
+    "V2->V3": 99,
+    "V1->V3": 90,
+    "pooled_annual": 207,
+}
 
 
 def cv_contract_table(
@@ -33,12 +77,36 @@ def cv_contract_table(
     """Return the common audit/QC/CV contract every model report must follow."""
     return pd.DataFrame(
         [
-            {"component": "Data audit", "requirement": "Visit pattern, analysis population, and Feature x Visit x Site missingness displayed before modelling."},
-            {"component": "MRI QC", "requirement": "Distribution by site, site-effect screen, outlier review, and harmonisation leakage policy displayed before modelling."},
+            {
+                "component": "Data audit",
+                "requirement": (
+                    "Visit pattern, analysis population, and Feature x Visit x Site "
+                    "missingness displayed before modelling."
+                ),
+            },
+            {
+                "component": "MRI QC",
+                "requirement": (
+                    "Distribution by site, site-effect screen, outlier review, "
+                    "and harmonisation leakage policy displayed before modelling."
+                ),
+            },
             {"component": "Outer CV", "requirement": outer_cv},
             {"component": "Inner CV", "requirement": inner_cv},
-            {"component": "Grouping", "requirement": f"All visits/intervals for one participant stay together: {grouping_unit}."},
-            {"component": "Leakage policy", "requirement": "Imputation, scaling, feature selection, harmonisation, and tuning are fit on training subjects only."},
+            {
+                "component": "Grouping",
+                "requirement": (
+                    "All visits/intervals for one participant stay together: "
+                    f"{grouping_unit}."
+                ),
+            },
+            {
+                "component": "Leakage policy",
+                "requirement": (
+                    "Imputation, scaling, feature selection, harmonisation, and "
+                    "tuning are fit on training subjects only."
+                ),
+            },
         ]
     )
 
@@ -63,9 +131,13 @@ def best_model_rows_from_logs(log_paths) -> pd.DataFrame:
         return pd.DataFrame()
     logs["d_score"] = pd.to_numeric(logs["d_score"], errors="coerce")
     if "mean_validation_annual_dz" in logs.columns:
-        logs["mean_validation_annual_dz"] = pd.to_numeric(logs["mean_validation_annual_dz"], errors="coerce")
+        logs["mean_validation_annual_dz"] = pd.to_numeric(
+            logs["mean_validation_annual_dz"],
+            errors="coerce",
+        )
     else:
         logs["mean_validation_annual_dz"] = np.nan
+
     if "annual_interval_gap" in logs.columns:
         logs["annual_interval_gap"] = pd.to_numeric(logs["annual_interval_gap"], errors="coerce")
     else:
@@ -73,7 +145,11 @@ def best_model_rows_from_logs(log_paths) -> pd.DataFrame:
     logs = logs.dropna(subset=["model"]).copy()
     logs["_sort_annual"] = logs["mean_validation_annual_dz"].fillna(logs["d_score"])
     logs["_sort_gap"] = logs["annual_interval_gap"].fillna(np.inf)
-    logs = logs.sort_values(["_sort_annual", "_sort_gap", "d_score"], ascending=[False, True, False], kind="mergesort")
+    logs = logs.sort_values(
+        ["_sort_annual", "_sort_gap", "d_score"],
+        ascending=[False, True, False],
+        kind="mergesort",
+    )
     return logs.groupby("model", as_index=False, sort=False).head(1).reset_index(drop=True)
 
 
@@ -126,6 +202,7 @@ def append_log_model_summaries(performance: pd.DataFrame, log_models: pd.DataFra
         model = str(row["model"])
         if model in existing:
             continue
+
         for _, spec in PERFORMANCE_SPEC.iterrows():
             value = np.nan
             n = np.nan
@@ -133,26 +210,36 @@ def append_log_model_summaries(performance: pd.DataFrame, log_models: pd.DataFra
             evidence = row.get("notes", "")
             if spec["question"] == "12-month sensitivity V1->V2":
                 value = row.get("dz_v1_v2", np.nan)
-                n = row.get("n_subjects", np.nan)
-                status = "available_from_existing_log" if pd.notna(value) else "not_available_in_existing_log"
+                n = CANONICAL_PAIR_COUNTS["V1->V2"]
+                status = _availability_status(value)
             elif spec["question"] == "12-month sensitivity V2->V3":
                 value = row.get("dz_v2_v3", np.nan)
-                n = row.get("n_subjects", np.nan)
-                status = "available_from_existing_log" if pd.notna(value) else "not_available_in_existing_log"
+                n = CANONICAL_PAIR_COUNTS["V2->V3"]
+                status = _availability_status(value)
+            elif spec["question"] == "12-month pooled annual sensitivity":
+                has_annual_context = (
+                    pd.notna(row.get("dz_v1_v2", np.nan))
+                    or pd.notna(row.get("dz_v2_v3", np.nan))
+                    or pd.notna(row.get("mean_validation_annual_dz", np.nan))
+                )
+                if has_annual_context:
+                    value = row.get("d_score", np.nan)
+                    n = CANONICAL_PAIR_COUNTS["pooled_annual"]
+                    status = _availability_status(value)
             elif spec["question"] == "24-month cumulative sensitivity":
-                value = row.get("d_score", np.nan)
-                n = row.get("n_subjects", np.nan)
-                status = "available_from_existing_log_check_interval_before_claiming_v1_v3"
+                value = row.get("dz_v1_v3", np.nan)
+                n = CANONICAL_PAIR_COUNTS["V1->V3"]
+                status = _availability_status(value)
             elif spec["question"] == "Direction consistency":
                 value = row.get("p_progression", np.nan)
-                n = row.get("n_subjects", np.nan)
-                status = "available_from_existing_log" if pd.notna(value) else "not_available_in_existing_log"
+                n = CANONICAL_PAIR_COUNTS["pooled_annual"]
+                status = _availability_status(value)
             elif spec["question"] == "Robustness":
                 lo = row.get("d_ci_low", np.nan)
                 hi = row.get("d_ci_high", np.nan)
                 if pd.notna(lo) or pd.notna(hi):
                     value = f"{lo}, {hi}"
-                    n = row.get("n_subjects", np.nan)
+                    n = CANONICAL_PAIR_COUNTS["pooled_annual"]
                     status = "available_from_existing_log"
             rows.append({
                 "model": model,
@@ -188,8 +275,21 @@ def _interval_row(table: pd.DataFrame | None, interval: str) -> pd.Series | None
     return table.loc[mask].iloc[0]
 
 
-def _best_abs(table: pd.DataFrame | None, interval: str, value_col: str = "d_z") -> pd.Series | None:
-    if table is None or table.empty or value_col not in table.columns or "interval" not in table.columns:
+def _availability_status(value) -> str:
+    return "available_from_existing_log" if pd.notna(value) else "not_available_in_existing_log"
+
+
+def _best_abs(
+    table: pd.DataFrame | None,
+    interval: str,
+    value_col: str = "d_z",
+) -> pd.Series | None:
+    if (
+        table is None
+        or table.empty
+        or value_col not in table.columns
+        or "interval" not in table.columns
+    ):
         return None
     rows = table[table["interval"].astype(str).str.upper().eq(interval.upper())].copy()
     if rows.empty:
@@ -213,7 +313,7 @@ def _resolve_value(question: str, **tables):
         if row is None:
             return np.nan, np.nan, "missing", "composite V1->V2"
         return (
-            f"{row.get('d_z', np.nan)} [{row.get('d_z_ci_low', np.nan)}, {row.get('d_z_ci_high', np.nan)}]; P={row.get('p_delta_positive', np.nan)}",
+            _format_effect_value(row),
             row.get("n_pairs", np.nan),
             "computed",
             "composite V1->V2 OOF annual interval",
@@ -223,10 +323,20 @@ def _resolve_value(question: str, **tables):
         if row is None:
             return np.nan, np.nan, "missing", "composite V2->V3"
         return (
-            f"{row.get('d_z', np.nan)} [{row.get('d_z_ci_low', np.nan)}, {row.get('d_z_ci_high', np.nan)}]; P={row.get('p_delta_positive', np.nan)}",
+            _format_effect_value(row),
             row.get("n_pairs", np.nan),
             "computed",
             "composite V2->V3 OOF annual interval",
+        )
+    if question == "12-month pooled annual sensitivity":
+        row = _interval_row(composite, "V1->V2 + V2->V3")
+        if row is None:
+            return np.nan, np.nan, "missing", "pooled annual V1->V2 + V2->V3"
+        return (
+            _format_effect_value(row),
+            row.get("n_pairs", np.nan),
+            "computed",
+            "pooled OOF annual pair deltas; participant-grouped splitting is preserved upstream",
         )
     if question == "24-month cumulative sensitivity":
         row = _interval_row(composite, "V1->V3")
@@ -250,12 +360,24 @@ def _resolve_value(question: str, **tables):
     if question == "Better than clinical scale?":
         comp = _interval_row(composite, "V1->V3")
         clin = _best_abs(clinical, "V1->V3")
-        return f"{_maybe(comp, 'd_z')} vs {_maybe(clin, 'd_z')}", _maybe(comp, "n_pairs"), "computed" if comp is not None and clin is not None else "missing_reference", "clinical interval benchmark"
+        status = "computed" if comp is not None and clin is not None else "missing_reference"
+        return (
+            f"{_maybe(comp, 'd_z')} vs {_maybe(clin, 'd_z')}",
+            _maybe(comp, "n_pairs"),
+            status,
+            "clinical interval benchmark",
+        )
     if question == "Better than MRI alone?":
         comp = _interval_row(composite, "V1->V3")
         base = _best_abs(single, "V1->V3")
         feature = _maybe(base, "feature")
-        return f"{_maybe(comp, 'd_z')} vs {feature}: {_maybe(base, 'd_z')}", _maybe(comp, "n_pairs"), "computed" if comp is not None and base is not None else "missing_reference", "strongest single MRI feature"
+        status = "computed" if comp is not None and base is not None else "missing_reference"
+        return (
+            f"{_maybe(comp, 'd_z')} vs {feature}: {_maybe(base, 'd_z')}",
+            _maybe(comp, "n_pairs"),
+            status,
+            "strongest single MRI feature",
+        )
     if question == "Disease specific?":
         row = specificity.iloc[0] if specificity is not None and not specificity.empty else None
         return _value(row, "value", "computed", "FRDA vs control change")
@@ -268,8 +390,17 @@ def _resolve_value(question: str, **tables):
     if question == "Feature robustness":
         if stability is None or stability.empty:
             return np.nan, np.nan, "missing", "stability diagnostics"
-        value_cols = [c for c in ("mean_jaccard", "sign_stability", "score_ranking_stability") if c in stability.columns]
-        return "; ".join(f"{c}={stability.iloc[0][c]}" for c in value_cols), np.nan, "computed", "feature/sign/ranking stability"
+        value_cols = [
+            c
+            for c in ("mean_jaccard", "sign_stability", "score_ranking_stability")
+            if c in stability.columns
+        ]
+        return (
+            "; ".join(f"{c}={stability.iloc[0][c]}" for c in value_cols),
+            np.nan,
+            "computed",
+            "feature/sign/ranking stability",
+        )
     return np.nan, np.nan, "missing", ""
 
 
@@ -286,6 +417,14 @@ def _maybe(row, col):
     return row.get(col, np.nan)
 
 
+def _format_effect_value(row) -> str:
+    return (
+        f"{row.get('d_z', np.nan)} "
+        f"[{row.get('d_z_ci_low', np.nan)}, {row.get('d_z_ci_high', np.nan)}]; "
+        f"P={row.get('p_delta_positive', np.nan)}"
+    )
+
+
 def _value(row, col, ok_status, evidence):
     if row is None:
         return np.nan, np.nan, "missing", evidence
@@ -294,6 +433,7 @@ def _value(row, col, ok_status, evidence):
 
 __all__ = [
     "PERFORMANCE_SPEC",
+    "CANONICAL_PAIR_COUNTS",
     "append_log_model_summaries",
     "assemble_performance_rows",
     "best_model_rows_from_logs",

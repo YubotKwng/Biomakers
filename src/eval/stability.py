@@ -21,11 +21,14 @@ def selected_feature_jaccard(feature_sets: Iterable[Iterable[str]]) -> dict:
                 vals.append(0.0)
             else:
                 vals.append(len(a & b) / len(a | b))
+    arr = np.asarray(vals, dtype=float)
     return {
         "n_sets": len(sets),
-        "mean_jaccard": float(np.mean(vals)) if vals else (1.0 if sets else np.nan),
-        "min_jaccard": float(np.min(vals)) if vals else np.nan,
-        "max_jaccard": float(np.max(vals)) if vals else np.nan,
+        "mean_jaccard": float(np.mean(arr)) if len(arr) else (1.0 if sets else np.nan),
+        "median_jaccard": float(np.median(arr)) if len(arr) else np.nan,
+        "iqr_jaccard": float(np.percentile(arr, 75) - np.percentile(arr, 25)) if len(arr) else np.nan,
+        "min_jaccard": float(np.min(arr)) if len(arr) else np.nan,
+        "max_jaccard": float(np.max(arr)) if len(arr) else np.nan,
     }
 
 

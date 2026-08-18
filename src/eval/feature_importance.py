@@ -13,7 +13,10 @@ from .intervals import adjacent_pair_interval_effect_summary, annual_tuning_diag
 from .stability import selected_feature_jaccard
 
 
-def selected_srm_config_from_log(log: pd.DataFrame, model_name: str = "SRM Global Linear exploratory") -> dict:
+def selected_srm_config_from_log(
+    log: pd.DataFrame,
+    model_name: str = "SRM Global Linear exploratory",
+) -> dict:
     """Return the currently best SRM configuration from an optimization log."""
     if log is None or log.empty:
         raise ValueError("optimization log is empty")
@@ -21,11 +24,19 @@ def selected_srm_config_from_log(log: pd.DataFrame, model_name: str = "SRM Globa
         raise KeyError("log must include model and mean_validation_annual_dz columns")
     rows = log[log["model"].astype(str).eq(model_name)].copy()
     if rows.empty:
-        rows = log[log["model"].astype(str).str.contains("SRM Global Linear", na=False)].copy()
+        rows = log[
+            log["model"].astype(str).str.contains("SRM Global Linear", na=False)
+        ].copy()
     if rows.empty:
         raise ValueError("no SRM Global Linear rows found in optimization log")
-    rows["mean_validation_annual_dz"] = pd.to_numeric(rows["mean_validation_annual_dz"], errors="coerce")
-    rows["annual_interval_gap"] = pd.to_numeric(rows.get("annual_interval_gap", np.nan), errors="coerce")
+    rows["mean_validation_annual_dz"] = pd.to_numeric(
+        rows["mean_validation_annual_dz"],
+        errors="coerce",
+    )
+    rows["annual_interval_gap"] = pd.to_numeric(
+        rows.get("annual_interval_gap", np.nan),
+        errors="coerce",
+    )
     rows = rows.sort_values(
         ["mean_validation_annual_dz", "annual_interval_gap"],
         ascending=[False, True],
@@ -40,11 +51,11 @@ def selected_srm_config_from_log(log: pd.DataFrame, model_name: str = "SRM Globa
 
     return {
         "model": str(best.get("model", "SRM Global Linear")),
-        "ridge": float(best.get("param_ridge", 0.0)) if pd.notna(best.get("param_ridge", np.nan)) else 0.0,
+        "ridge": _float_or_default(best, "param_ridge", 0.0),
         "covariance_shrinkage": float(best.get("param_covariance_shrinkage", 0.0))
         if pd.notna(best.get("param_covariance_shrinkage", np.nan))
         else 0.0,
-        "z_clip": None if pd.isna(best.get("param_z_clip", np.nan)) else float(best.get("param_z_clip")),
+        "z_clip": _float_or_none(best, "param_z_clip"),
         "selection_method": str(best.get("param_selection_method", "none"))
         if pd.notna(best.get("param_selection_method", np.nan))
         else "none",
@@ -52,13 +63,23 @@ def selected_srm_config_from_log(log: pd.DataFrame, model_name: str = "SRM Globa
         "tuning_metric": "mean_validation_annual_dz",
         "source_row": best.to_dict(),
         "regularisation": {
-            "ridge": float(best.get("param_ridge", 0.0)) if pd.notna(best.get("param_ridge", np.nan)) else 0.0,
+            "ridge": _float_or_default(best, "param_ridge", 0.0),
             "covariance_shrinkage": float(best.get("param_covariance_shrinkage", 0.0))
             if pd.notna(best.get("param_covariance_shrinkage", np.nan))
             else 0.0,
             "z_clip": _none_if_nan(best.get("param_z_clip", np.nan)),
         },
     }
+
+
+def _float_or_default(row: pd.Series, key: str, default: float) -> float:
+    value = row.get(key, default)
+    return float(value) if pd.notna(value) else float(default)
+
+
+def _float_or_none(row: pd.Series, key: str) -> float | None:
+    value = row.get(key, np.nan)
+    return None if pd.isna(value) else float(value)
 
 
 def eligible_interval_frame(
@@ -70,11 +91,15 @@ def eligible_interval_frame(
     split_group_col: str = "subject",
 ) -> pd.DataFrame:
     """Return complete-case annual pair rows for selected features."""
-    cols = [pair_col, visit_col, split_group_col] + [f for f in feature_cols if f in df.columns]
+    cols = [pair_col, visit_col, split_group_col] + [
+        f for f in feature_cols if f in df.columns
+    ]
     work = df[cols].dropna().copy()
     work[visit_col] = pd.to_numeric(work[visit_col], errors="coerce").astype("Int64")
     work = work[work[visit_col].isin([1, 2])].copy()
-    complete = work.groupby(pair_col)[visit_col].agg(lambda s: {1, 2}.issubset(set(s.dropna().astype(int))))
+    complete = work.groupby(pair_col)[visit_col].agg(
+        lambda series: {1, 2}.issubset(set(series.dropna().astype(int)))
+    )
     complete_pairs = complete.index[complete.to_numpy(dtype=bool)]
     return work[work[pair_col].isin(complete_pairs)].copy()
 
@@ -92,7 +117,18 @@ def locked_selected_features(
     if not feats_present:
         return []
     y_select = (pd.to_numeric(df[visit_col], errors="coerce").values == 2).astype(int)
-    return list(select_features(selection_method, df[feats_present], y_select, feats_present, k=int(k)))
+    return list(
+        select_features(
+            selection_method,
+            df[feats_present],
+            y_select,
+            feats_present,
+            k=int(k),
+            train_frame=df,
+            subject_col="pair_id" if "pair_id" in df.columns else None,
+            visit_col=visit_col,
+        )
+    )
 
 
 def fit_locked_srm_full_data(
@@ -116,7 +152,13 @@ def fit_locked_srm_full_data(
         visit_col=visit_col,
         split_group_col=split_group_col,
     )
-    feats = locked_selected_features(sub, feature_cols, selection_method=selection_method, k=k, visit_col=visit_col)
+    feats = locked_selected_features(
+        sub,
+        feature_cols,
+        selection_method=selection_method,
+        k=k,
+        visit_col=visit_col,
+    )
     X = sub[feats].to_numpy(dtype=float) if feats else np.zeros((len(sub), 0))
     X_std, _, center, scale = standardize_train_test(X, X)
     if z_clip is not None and X_std.shape[1] > 0:
@@ -141,12 +183,24 @@ def fit_locked_srm_full_data(
     }
 
 
-def coefficient_importance_table(feature_names: Sequence[str], coef: Sequence[float]) -> pd.DataFrame:
+def coefficient_importance_table(
+    feature_names: Sequence[str],
+    coef: Sequence[float],
+) -> pd.DataFrame:
     """Return standardised coefficient magnitude and sign table."""
-    out = pd.DataFrame({"feature": list(feature_names), "standardised_coefficient": np.asarray(coef, dtype=float)})
+    out = pd.DataFrame(
+        {
+            "feature": list(feature_names),
+            "standardised_coefficient": np.asarray(coef, dtype=float),
+        }
+    )
     out["absolute_coefficient"] = out["standardised_coefficient"].abs()
     out["coefficient_sign"] = np.sign(out["standardised_coefficient"]).astype(int)
-    out = out.sort_values("absolute_coefficient", ascending=False, kind="mergesort").reset_index(drop=True)
+    out = out.sort_values(
+        "absolute_coefficient",
+        ascending=False,
+        kind="mergesort",
+    ).reset_index(drop=True)
     out["rank_by_absolute_coefficient"] = np.arange(1, len(out) + 1)
     return out
 
@@ -176,7 +230,16 @@ def bootstrap_srm_coefficients(
         visit_col=visit_col,
         split_group_col=split_group_col,
     )
-    feature_names = list(locked_feature_names or locked_selected_features(base, feature_cols, selection_method=selection_method, k=k, visit_col=visit_col))
+    feature_names = list(
+        locked_feature_names
+        or locked_selected_features(
+            base,
+            feature_cols,
+            selection_method=selection_method,
+            k=k,
+            visit_col=visit_col,
+        )
+    )
     rng = np.random.default_rng(random_seed)
     subjects = np.asarray(sorted(base[split_group_col].dropna().unique()))
     subject_rows = {s: base.index[base[split_group_col].eq(s)].to_numpy() for s in subjects}
@@ -216,8 +279,18 @@ def bootstrap_srm_coefficients(
         coef_rows.append(aligned)
         kept_boot += 1
     coef_mat = np.vstack(coef_rows) if coef_rows else np.zeros((0, len(feature_names)))
-    summary = _bootstrap_coef_summary(feature_names, coef_mat, selected_sets, full_coef=full_coef)
-    return {"summary": summary, "coef_samples": coef_mat, "selected_feature_sets": selected_sets, "n_boot_kept": kept_boot}
+    summary = _bootstrap_coef_summary(
+        feature_names,
+        coef_mat,
+        selected_sets,
+        full_coef=full_coef,
+    )
+    return {
+        "summary": summary,
+        "coef_samples": coef_mat,
+        "selected_feature_sets": selected_sets,
+        "n_boot_kept": kept_boot,
+    }
 
 
 def _bootstrap_coef_summary(
@@ -228,7 +301,11 @@ def _bootstrap_coef_summary(
     full_coef: Sequence[float] | None = None,
 ) -> pd.DataFrame:
     rows = []
-    full = np.asarray(full_coef, dtype=float) if full_coef is not None else np.full(len(feature_names), np.nan)
+    full = (
+        np.asarray(full_coef, dtype=float)
+        if full_coef is not None
+        else np.full(len(feature_names), np.nan)
+    )
     selected_sets_as_sets = [set(s) for s in selected_sets]
     for j, feat in enumerate(feature_names):
         vals = coef_mat[:, j] if coef_mat.size else np.asarray([], dtype=float)
@@ -236,20 +313,40 @@ def _bootstrap_coef_summary(
         pos = float(np.mean(vals > 0)) if len(vals) else np.nan
         neg = float(np.mean(vals < 0)) if len(vals) else np.nan
         sign_consistency = float(max(pos, neg)) if len(vals) else np.nan
-        rows.append({
-            "feature": feat,
-            "full_data_coefficient": full[j] if j < len(full) else np.nan,
-            "bootstrap_median_coefficient": float(np.median(vals)) if len(vals) else np.nan,
-            "bootstrap_ci_low": float(np.percentile(vals, 2.5)) if len(vals) else np.nan,
-            "bootstrap_ci_high": float(np.percentile(vals, 97.5)) if len(vals) else np.nan,
-            "selection_frequency": float(np.mean([feat in s for s in selected_sets_as_sets])) if selected_sets_as_sets else np.nan,
-            "positive_sign_frequency": pos,
-            "negative_sign_frequency": neg,
-            "sign_consistency": sign_consistency,
-            "crosses_zero": bool(np.nanmin(vals) <= 0 <= np.nanmax(vals)) if len(vals) else True,
-        })
+        rows.append(
+            {
+                "feature": feat,
+                "full_data_coefficient": full[j] if j < len(full) else np.nan,
+                "bootstrap_median_coefficient": (
+                    float(np.median(vals)) if len(vals) else np.nan
+                ),
+                "bootstrap_ci_low": (
+                    float(np.percentile(vals, 2.5)) if len(vals) else np.nan
+                ),
+                "bootstrap_ci_high": (
+                    float(np.percentile(vals, 97.5)) if len(vals) else np.nan
+                ),
+                "selection_frequency": (
+                    float(np.mean([feat in s for s in selected_sets_as_sets]))
+                    if selected_sets_as_sets
+                    else np.nan
+                ),
+                "positive_sign_frequency": pos,
+                "negative_sign_frequency": neg,
+                "sign_consistency": sign_consistency,
+                "crosses_zero": (
+                    bool(np.nanmin(vals) <= 0 <= np.nanmax(vals))
+                    if len(vals)
+                    else True
+                ),
+            }
+        )
     out = pd.DataFrame(rows)
-    return out.sort_values("sign_consistency", ascending=False, kind="mergesort").reset_index(drop=True)
+    return out.sort_values(
+        "sign_consistency",
+        ascending=False,
+        kind="mergesort",
+    ).reset_index(drop=True)
 
 
 def annual_feature_contributions(
@@ -274,7 +371,10 @@ def annual_feature_contributions(
         if len(ordered) != 2:
             continue
         idx0, idx1 = ordered.index[0], ordered.index[1]
-        delta_x = X.loc[idx1, features].to_numpy(dtype=float) - X.loc[idx0, features].to_numpy(dtype=float)
+        delta_x = (
+            X.loc[idx1, features].to_numpy(dtype=float)
+            - X.loc[idx0, features].to_numpy(dtype=float)
+        )
         contrib = coef * delta_x
         interval = str(ordered["_interval"].iloc[0])
         for feat, dx, c in zip(features, delta_x, contrib):
@@ -306,13 +406,20 @@ def annual_feature_contributions(
         return np.full(len(wide.index), np.nan)
 
     for interval in ("V1->V2", "V2->V3"):
-        out[f"mean_standardized_feature_change_{interval}"] = _wide_values("mean_standardized_feature_change", interval)
+        out[f"mean_standardized_feature_change_{interval}"] = _wide_values(
+            "mean_standardized_feature_change",
+            interval,
+        )
         out[f"mean_contribution_{interval}"] = _wide_values("mean_contribution", interval)
     out["contribution_gap"] = out["mean_contribution_V1->V2"] - out["mean_contribution_V2->V3"]
     out["absolute_annual_contribution"] = (
         out[["mean_contribution_V1->V2", "mean_contribution_V2->V3"]].abs().mean(axis=1)
     )
-    out = out.sort_values("absolute_annual_contribution", ascending=False, kind="mergesort").reset_index(drop=True)
+    out = out.sort_values(
+        "absolute_annual_contribution",
+        ascending=False,
+        kind="mergesort",
+    ).reset_index(drop=True)
     return long, out
 
 
@@ -377,9 +484,15 @@ def lofo_srm_importance(
             "d23_loss": full["dz_v2_v3"] - diag["dz_v2_v3"],
             "full_mean_annual_dz": full["mean_validation_annual_dz"],
             "lofo_mean_annual_dz": diag["mean_validation_annual_dz"],
-            "annual_performance_loss": full["mean_validation_annual_dz"] - diag["mean_validation_annual_dz"],
+            "annual_performance_loss": (
+                full["mean_validation_annual_dz"] - diag["mean_validation_annual_dz"]
+            ),
         })
-    return pd.DataFrame(rows).sort_values("annual_performance_loss", ascending=False, kind="mergesort").reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values(
+        "annual_performance_loss",
+        ascending=False,
+        kind="mergesort",
+    ).reset_index(drop=True)
 
 
 def _annual_oof_diagnostics(
@@ -440,7 +553,15 @@ def correlation_redundancy(
             r = corr.loc[a, b]
             if pd.notna(r) and abs(float(r)) > float(threshold):
                 pairs.append({"feature_a": a, "feature_b": b, "correlation": float(r)})
-    pair_df = pd.DataFrame(pairs).sort_values("correlation", key=lambda s: s.abs(), ascending=False, kind="mergesort") if pairs else pd.DataFrame(columns=["feature_a", "feature_b", "correlation"])
+    if pairs:
+        pair_df = pd.DataFrame(pairs).sort_values(
+            "correlation",
+            key=lambda series: series.abs(),
+            ascending=False,
+            kind="mergesort",
+        )
+    else:
+        pair_df = pd.DataFrame(columns=["feature_a", "feature_b", "correlation"])
     flags = pd.Series(False, index=cols)
     for _, row in pair_df.iterrows():
         flags.loc[row["feature_a"]] = True
@@ -456,7 +577,15 @@ def infer_feature_domains(feature_names: Sequence[str], groups=None) -> pd.DataF
     rows = []
     for feat in feature_names:
         low = feat.lower()
-        if feat in {"csa_c1c2", "Cereb_vol", "SCP_vol", "TotalBrainGMVol_nocereb", "TotalBrainWMVol_nocereb", "TotalBrainVol_nocereb", "eTIV"}:
+        if feat in {
+            "csa_c1c2",
+            "Cereb_vol",
+            "SCP_vol",
+            "TotalBrainGMVol_nocereb",
+            "TotalBrainWMVol_nocereb",
+            "TotalBrainVol_nocereb",
+            "eTIV",
+        }:
             if "scp" in low:
                 domain = "SCP morphometry"
             elif "csa" in low:
@@ -465,7 +594,9 @@ def infer_feature_domains(feature_names: Sequence[str], groups=None) -> pd.DataF
                 domain = "Brain morphometry"
         elif feat in {"sFA_c3c5", "sMD_c3c5", "sRD_c3c5", "sAD_c3c5"}:
             domain = "Spinal cord diffusion"
-        elif "scp" in low and any(low.startswith(prefix) for prefix in ("fa_", "md_", "rd_", "ad_")):
+        elif "scp" in low and any(
+            low.startswith(prefix) for prefix in ("fa_", "md_", "rd_", "ad_")
+        ):
             domain = "SCP diffusion"
         elif feat in dti or any(low.startswith(prefix) for prefix in ("fa_", "md_", "rd_", "ad_")):
             domain = "Brain DTI"
@@ -479,7 +610,10 @@ def infer_feature_domains(feature_names: Sequence[str], groups=None) -> pd.DataF
     return pd.DataFrame(rows)
 
 
-def domain_contributions(contribution_table: pd.DataFrame, domain_map: pd.DataFrame) -> pd.DataFrame:
+def domain_contributions(
+    contribution_table: pd.DataFrame,
+    domain_map: pd.DataFrame,
+) -> pd.DataFrame:
     """Aggregate feature contributions by MRI domain."""
     if contribution_table.empty:
         return pd.DataFrame()
@@ -493,27 +627,62 @@ def domain_contributions(contribution_table: pd.DataFrame, domain_map: pd.DataFr
         )
     )
     out["difference"] = out["v1_v2_total_contribution"] - out["v2_v3_total_contribution"]
-    out["absolute_mean_annual_contribution"] = out[["v1_v2_total_contribution", "v2_v3_total_contribution"]].abs().mean(axis=1)
-    return out.sort_values("absolute_mean_annual_contribution", ascending=False, kind="mergesort").reset_index(drop=True)
+    out["absolute_mean_annual_contribution"] = (
+        out[["v1_v2_total_contribution", "v2_v3_total_contribution"]]
+        .abs()
+        .mean(axis=1)
+    )
+    return out.sort_values(
+        "absolute_mean_annual_contribution",
+        ascending=False,
+        kind="mergesort",
+    ).reset_index(drop=True)
 
 
-def selection_stability_summary(selected_sets: Sequence[Sequence[str]], feature_names: Sequence[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def selection_stability_summary(
+    selected_sets: Sequence[Sequence[str]],
+    feature_names: Sequence[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return feature selection frequency and Jaccard-distribution summaries."""
     sets = [set(s) for s in selected_sets]
     rows = []
     for feat in feature_names:
-        rows.append({"feature": feat, "selection_frequency": float(np.mean([feat in s for s in sets])) if sets else np.nan})
-    feature_df = pd.DataFrame(rows).sort_values("selection_frequency", ascending=False, kind="mergesort")
+        rows.append(
+            {
+                "feature": feat,
+                "selection_frequency": (
+                    float(np.mean([feat in s for s in sets])) if sets else np.nan
+                ),
+            }
+        )
+    feature_df = pd.DataFrame(rows).sort_values(
+        "selection_frequency",
+        ascending=False,
+        kind="mergesort",
+    )
     vals = []
     for i, a in enumerate(sets):
         for b in sets[i + 1:]:
-            vals.append(1.0 if not a and not b else (0.0 if not a or not b else len(a & b) / len(a | b)))
+            if not a and not b:
+                vals.append(1.0)
+            elif not a or not b:
+                vals.append(0.0)
+            else:
+                vals.append(len(a & b) / len(a | b))
     base = selected_feature_jaccard(selected_sets)
-    summary = pd.DataFrame([{
-        **base,
-        "median_jaccard": float(np.median(vals)) if vals else np.nan,
-        "iqr_jaccard": float(np.percentile(vals, 75) - np.percentile(vals, 25)) if vals else np.nan,
-    }])
+    summary = pd.DataFrame(
+        [
+            {
+                **base,
+                "median_jaccard": float(np.median(vals)) if vals else np.nan,
+                "iqr_jaccard": (
+                    float(np.percentile(vals, 75) - np.percentile(vals, 25))
+                    if vals
+                    else np.nan
+                ),
+            }
+        ]
+    )
     return feature_df.reset_index(drop=True), summary
 
 
@@ -533,7 +702,9 @@ def integrated_feature_importance(
         on="feature",
         how="left",
     )
-    out["strong_correlation_redundancy_flag"] = out["feature"].map(redundancy_flags).fillna(False).astype(bool)
+    out["strong_correlation_redundancy_flag"] = (
+        out["feature"].map(redundancy_flags).fillna(False).astype(bool)
+    )
     out["interpretation_label"] = qualitative_importance_labels(out)
     keep = [
         "feature",
@@ -560,7 +731,11 @@ def integrated_feature_importance(
 
 def qualitative_importance_labels(table: pd.DataFrame) -> pd.Series:
     """Assign transparent qualitative labels from displayed evidence."""
-    abs_contrib = table[["mean_contribution_V1->V2", "mean_contribution_V2->V3"]].abs().mean(axis=1)
+    abs_contrib = (
+        table[["mean_contribution_V1->V2", "mean_contribution_V2->V3"]]
+        .abs()
+        .mean(axis=1)
+    )
     contrib_cut = abs_contrib.quantile(0.75) if abs_contrib.notna().any() else np.inf
     lofo = pd.to_numeric(table.get("annual_performance_loss", np.nan), errors="coerce")
     lofo_cut = lofo.quantile(0.75) if lofo.notna().any() else np.inf
@@ -571,7 +746,10 @@ def qualitative_importance_labels(table: pd.DataFrame) -> pd.Series:
             and pd.notna(row.get("bootstrap_ci_high"))
             and row.get("bootstrap_ci_low") <= 0 <= row.get("bootstrap_ci_high")
         )
-        sign_ok = pd.notna(row.get("sign_consistency")) and float(row.get("sign_consistency")) >= 0.8
+        sign_ok = (
+            pd.notna(row.get("sign_consistency"))
+            and float(row.get("sign_consistency")) >= 0.8
+        )
         high_contrib = pd.notna(abs_contrib.loc[idx]) and abs_contrib.loc[idx] >= contrib_cut
         high_lofo = pd.notna(lofo.loc[idx]) and lofo.loc[idx] >= lofo_cut and lofo.loc[idx] > 0
         interval_specific = (
@@ -582,7 +760,11 @@ def qualitative_importance_labels(table: pd.DataFrame) -> pd.Series:
         )
         if (not sign_ok) or ci_crosses_zero:
             labels.append("Unstable / uncertain")
-        elif bool(row.get("strong_correlation_redundancy_flag", False)) and high_contrib and not high_lofo:
+        elif (
+            bool(row.get("strong_correlation_redundancy_flag", False))
+            and high_contrib
+            and not high_lofo
+        ):
             labels.append("Potentially redundant contributor")
         elif high_contrib and high_lofo and sign_ok:
             labels.append("Strong robust contributor")
