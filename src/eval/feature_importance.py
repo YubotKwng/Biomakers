@@ -111,11 +111,13 @@ def locked_selected_features(
     selection_method: str = "none",
     k: int = 8,
     visit_col: str = "visit",
+    selection_params: Mapping | None = None,
 ) -> list[str]:
     """Apply the locked feature-selection rule on the supplied frame."""
     feats_present = [f for f in feature_cols if f in df.columns]
     if not feats_present:
         return []
+    params = dict(selection_params or {})
     y_select = (pd.to_numeric(df[visit_col], errors="coerce").values == 2).astype(int)
     return list(
         select_features(
@@ -127,6 +129,7 @@ def locked_selected_features(
             train_frame=df,
             subject_col="pair_id" if "pair_id" in df.columns else None,
             visit_col=visit_col,
+            **params,
         )
     )
 
@@ -143,6 +146,8 @@ def fit_locked_srm_full_data(
     ridge: float = 0.0,
     covariance_shrinkage: float = 0.0,
     z_clip: float | None = None,
+    sign_constraint: str | None = None,
+    selection_params: Mapping | None = None,
 ) -> dict:
     """Fit the locked SRM model on all eligible FRDA rows for interpretation."""
     sub = eligible_interval_frame(
@@ -158,6 +163,7 @@ def fit_locked_srm_full_data(
         selection_method=selection_method,
         k=k,
         visit_col=visit_col,
+        selection_params=selection_params,
     )
     X = sub[feats].to_numpy(dtype=float) if feats else np.zeros((len(sub), 0))
     X_std, _, center, scale = standardize_train_test(X, X)
@@ -166,6 +172,7 @@ def fit_locked_srm_full_data(
     model = SRMGlobalLinear(
         ridge=float(ridge),
         covariance_shrinkage=float(covariance_shrinkage),
+        sign_constraint=sign_constraint,
         start_visit=1,
         end_visit=2,
     ).fit(X_std, sub[pair_col].values, sub[visit_col].values)

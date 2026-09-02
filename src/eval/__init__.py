@@ -1,6 +1,13 @@
 """Evaluation metrics, cross-validation runners, and model audit utilities."""
 
 from .clinical_validity import clinical_validity
+from .elbow import (
+    DEFAULT_ELBOW_K_VALUES,
+    elbow_candidate_grid,
+    elbow_nested_candidates,
+    evaluate_elbow_feature_counts,
+    select_feature_count_elbow,
+)
 from .intervals import interval_effect_summary
 from .model_selection import select_hierarchical_candidate
 from .single_feature import single_feature_interval_baselines
@@ -14,9 +21,14 @@ from .stability import (
 __all__ = [
     "clinical_validity",
     "coefficient_sign_stability",
+    "DEFAULT_ELBOW_K_VALUES",
+    "elbow_candidate_grid",
+    "elbow_nested_candidates",
+    "evaluate_elbow_feature_counts",
     "evaluate_locked_model_specificity",
     "interval_effect_summary",
     "score_ranking_stability",
+    "select_feature_count_elbow",
     "select_hierarchical_candidate",
     "selected_feature_jaccard",
     "single_feature_interval_baselines",

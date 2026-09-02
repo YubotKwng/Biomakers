@@ -65,6 +65,7 @@ def select_features(
     sparse_lambda: float = 0.01,
     sparse_alpha: float = 0.5,
     sparse_tolerance: float = 1e-8,
+    fixed_features: Sequence[str] | None = None,
 ) -> List[str]:
     """Select features using a training-fold-only matrix and target.
 
@@ -82,6 +83,9 @@ def select_features(
         method = "mi_visit"
     if method == "none":
         return list(names)
+    if method in {"fixed", "fixed_panel"}:
+        fixed = list(fixed_features or [])
+        return [f for f in fixed if f in names]
     if len(names) == 0:
         return []
 
@@ -142,7 +146,8 @@ def select_features(
         return selected["feature"].tolist()
     raise ValueError(
         "method must be one of {'none', 'mi', 'mi_visit', 'mml', "
-        "'progression_univariate', 'progression_mrmr', 'sparse_srm'}"
+        "'progression_univariate', 'progression_mrmr', 'sparse_srm', "
+        "'fixed', 'fixed_panel'}"
     )
 
 
@@ -196,26 +201,24 @@ def annual_feature_deltas(
     )
     tmp["_visit_int"] = pd.to_numeric(tmp[visit_col], errors="coerce").astype("Int64")
     tmp = tmp[tmp["_visit_int"].isin([1, 2])].copy()
-    interval_by_subject = _pair_interval_from_id(tmp[subject_col])
-    for pair_id, group in tmp.groupby(subject_col, sort=False):
-        visits = group.sort_values("_visit_int")
-        if set(visits["_visit_int"].dropna().astype(int)) != {1, 2}:
-            continue
-        base = visits[visits["_visit_int"] == 1].iloc[0]
-        foll = visits[visits["_visit_int"] == 2].iloc[0]
-        interval = interval_by_subject.loc[visits.index].dropna()
-        interval_label = str(interval.iloc[0]) if len(interval) else "annual"
-        row = {subject_col: pair_id, "interval": interval_label}
-        for feat in usable:
-            start_value = pd.to_numeric(pd.Series([base[feat]]), errors="coerce").iloc[0]
-            end_value = pd.to_numeric(pd.Series([foll[feat]]), errors="coerce").iloc[0]
-            row[feat] = (
-                float(end_value - start_value)
-                if pd.notna(start_value) and pd.notna(end_value)
-                else np.nan
-            )
-        rows.append(row)
-    return pd.DataFrame(rows)
+    if tmp.empty:
+        return pd.DataFrame(columns=[subject_col, "interval", *usable])
+
+    for feat in usable:
+        tmp[feat] = pd.to_numeric(tmp[feat], errors="coerce")
+    wide = tmp.pivot_table(
+        index=subject_col,
+        columns="_visit_int",
+        values=usable,
+        aggfunc="mean",
+    )
+    if 1 not in wide.columns.get_level_values(1) or 2 not in wide.columns.get_level_values(1):
+        return pd.DataFrame(columns=[subject_col, "interval", *usable])
+
+    delta = wide.xs(2, axis=1, level=1) - wide.xs(1, axis=1, level=1)
+    delta = delta.dropna(how="all").reset_index()
+    delta["interval"] = _pair_interval_from_id(delta[subject_col]).fillna("annual")
+    return delta[[subject_col, "interval", *[f for f in usable if f in delta.columns]]]
 
 
 def _cohens_dz(values: pd.Series | np.ndarray) -> float:

@@ -628,6 +628,7 @@ def lda_loocv(
     split_groups = np.asarray(sub[resolved_split_group_col].unique())
     oof_rows = []
     selected_features_by_fold: list[list[str]] = []
+    chosen_rows: list[dict] = []
     groups = sub[resolved_split_group_col].values
     # The split group can differ from the paired-delta subject column. In
     # TRACK-FA this lets evaluation form V1V2/V2V3 deltas by pair_id while CV
@@ -1061,6 +1062,7 @@ def interaction_loocv(
     split_groups = np.asarray(sub[resolved_split_group_col].unique())
     oof_rows = []
     selected_features_by_fold: list[list[str]] = []
+    chosen_rows: list[dict] = []
     groups = sub[resolved_split_group_col].values
     use_kfold = cv_n_splits is not None and 1 < int(cv_n_splits) < len(split_groups)
     splits = (
@@ -1100,7 +1102,41 @@ def interaction_loocv(
             train_df[visit_col].values,
             cv_group_id=train_df[resolved_split_group_col].values,
         )
+        inner = dict(getattr(model, "best_inner_cv_row_", {}) or {})
+        best_params = dict(getattr(model, "best_params_", {}) or {})
         scores = model.score(test_df[feats], test_df[mods_present])
+        fold_oof = test_df[[subject_col, visit_col]].copy()
+        fold_oof["score"] = scores
+        fold_intervals = adjacent_pair_interval_effect_summary(
+            fold_oof,
+            pair_col=subject_col,
+            visit_col=visit_col,
+            score_col="score",
+            n_boot=0,
+            seed=random_seed + len(chosen_rows) + 1,
+        )
+        fold_diag = annual_tuning_diagnostics(fold_intervals)
+        chosen_rows.append({
+            "outer_fold": len(chosen_rows) + 1,
+            "outer_train_n_subjects": int(train_df[resolved_split_group_col].nunique()),
+            "outer_validation_n_subjects": int(test_df[resolved_split_group_col].nunique()),
+            "outer_train_n_pairs": int(train_df[subject_col].nunique()),
+            "outer_validation_n_pairs": int(test_df[subject_col].nunique()),
+            "outer_validation_d": fold_diag.get("mean_validation_annual_dz", np.nan),
+            "outer_validation_dz_v1_v2": fold_diag.get("dz_v1_v2", np.nan),
+            "outer_validation_dz_v2_v3": fold_diag.get("dz_v2_v3", np.nan),
+            "outer_validation_annual_interval_gap": fold_diag.get("annual_interval_gap", np.nan),
+            "outer_validation_p_progression": fold_diag.get("p_progression", np.nan),
+            "inner_d_score": inner.get("mean_validation_annual_dz", np.nan),
+            "inner_dz_v1_v2": inner.get("dz_v1_v2", np.nan),
+            "inner_dz_v2_v3": inner.get("dz_v2_v3", np.nan),
+            "inner_annual_interval_gap": inner.get("annual_interval_gap", np.nan),
+            "inner_p_progression": inner.get("p_progression", np.nan),
+            "alpha": best_params.get("alpha", np.nan),
+            "l1_ratio": best_params.get("l1_ratio", np.nan),
+            "n_features": len(feats),
+            "modulators": ",".join(mods_present),
+        })
         for sid, v, sc in zip(test_df[subject_col].values, test_df[visit_col].values, scores):
             oof_rows.append({subject_col: sid, visit_col: int(v), "score": float(sc)})
 
@@ -1125,6 +1161,7 @@ def interaction_loocv(
         "d_ci_low": d_lo,
         "d_ci_high": d_hi,
         "selected_features_by_fold": selected_features_by_fold,
+        "chosen_params_df": pd.DataFrame(chosen_rows),
         "cv_n_splits": int(cv_n_splits) if use_kfold else int(len(split_groups)),
         "cv_mode": "group_kfold" if use_kfold else "loo",
         "split_group_col": resolved_split_group_col,

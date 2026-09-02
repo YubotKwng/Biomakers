@@ -4,11 +4,19 @@ The package exposes model components for clinical-score prediction, visit
 separation, progression-sensitive composites, and patient-adaptive weighting.
 """
 from .interaction import InteractionLinearComposite
-from .srm_global import SRMGlobalLinear, srm_global_loocv, srm_global_repeated_group_cv
+from .srm_global import (
+    SRMGlobalLinear,
+    srm_global_holdout_inner_cv,
+    srm_global_loocv,
+    srm_global_nested_loocv,
+    srm_global_repeated_group_cv,
+)
 
 __all__ = [
     "InteractionLinearComposite",
     "SRMGlobalLinear",
+    "srm_global_holdout_inner_cv",
     "srm_global_loocv",
+    "srm_global_nested_loocv",
     "srm_global_repeated_group_cv",
 ]

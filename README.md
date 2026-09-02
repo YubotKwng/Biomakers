@@ -224,6 +224,26 @@ All non-`none` selectors are fitted inside the relevant training fold only.
 Selection frequency, Jaccard stability, and represented MRI domains are
 displayed for review but are not used as causal feature-importance claims.
 
+The supervisor-recommended a priori panel is encoded as 70 MRI features:
+13 brain structural features, one provisional spinal structural feature, 27
+brain FA tract features, 27 brain RD tract features, and spinal C3-C5 FA/RD.
+The spinal structural feature currently uses `sCSA_C12_UMN` provisionally and
+the notebook displays the two alternative CSA candidates for PG/supervisor
+confirmation. The 70 features are also split into named panels:
+
+| Panel family | Panels |
+|---|---|
+| Structural | cerebellum/brainstem, cerebrum, spinal |
+| Diffusion | cerebellum/brainstem, projection, association, commissural, spinal |
+
+`notebooks/feature_selection_pipeline.ipynb` now evaluates each single panel,
+every 2-panel combination, every 3-panel combination, and so on through the
+full 70-feature combination. The panel-combination table displays the inner-CV
+validation score beside the outer-CV test score, including the validation-test
+gap used as an overfitting check. The same notebook refits the best-performing
+panel-combination model on all eligible participants for interpretation and
+displays coefficient-based feature importance directly in the notebook.
+
 The tuning notebooks display:
 
 - all tested parameter values;
@@ -302,7 +322,7 @@ The pipeline is notebook-first:
 ```text
 src/       reusable functions
 notebooks/ execution and result display
-results/  exported tables/logs
+results/  optional exported logs
 ```
 
 | Notebook | Purpose |
@@ -313,13 +333,10 @@ results/  exported tables/logs
 | `interaction_term.ipynb` | Patient-Adaptive interaction model using MRI features plus demographic/genetic modulators. |
 | `comparator_table.ipynb` | LDA and regression comparator models. |
 | `progression_dl.ipynb` | Exploratory deep-learning models; skips gracefully if PyTorch is unavailable. |
-| `model_performance.ipynb` | Final consolidated performance display and CSV export. |
+| `model_performance.ipynb` | Final consolidated performance display, including validation-vs-test overfit checks. |
 
-The consolidated model-performance file is:
-
-```text
-results/model_performance_summary.csv
-```
+The final model-performance table is displayed directly in the notebook rather
+than exported to CSV.
 
 ## Current Result Snapshot
 

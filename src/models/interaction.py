@@ -11,14 +11,16 @@ dur), and beta/gamma are learned weights.
 Fitting objective (small-sample, interpretable, torch-free)
 -----------------------------------------------------------
 The training target is longitudinal sensitivity (paired Cohen's d_z / SRM).
-We approximate a stable, sparse direction for change by fitting an ElasticNet
-to per-subject paired differences of the *standardised* design:
+We approximate a stable direction for change by fitting a regularised linear
+model to per-subject paired differences of the *standardised* design:
 
     Δdesign_i = design_i(v2) - design_i(v1)
     fit w:  Δdesign_i @ w ≈ 1
 
-When fit_intercept=False and y is constant, this finds a sparse direction in
-feature space aligned with the mean change vector, with shrinkage for stability.
+When fit_intercept=False and y is constant, this finds a direction in feature
+space aligned with the mean change vector, with shrinkage for stability.
+Use ``l1_ratio=0`` for dense ridge-style fitting after upstream feature
+selection; positive ``l1_ratio`` values retain ElasticNet sparsity.
 Hyperparameters can be tuned by inner subject-group CV to maximise SRM on
 held-out subjects.
 """
@@ -30,7 +32,7 @@ from typing import Iterable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import ElasticNet
+from sklearn.linear_model import ElasticNet, Ridge
 
 from ..config import Config, DEFAULT_CONFIG
 from ..eval.cv import group_kfold_indices
@@ -60,7 +62,7 @@ def _paired_rows_by_subject(
 
 @dataclass
 class InteractionLinearComposite:
-    """Sparse linear composite with X⊗Z interactions (ElasticNet on Δdesign)."""
+    """Linear composite with X⊗Z interactions fit on paired Δdesign rows."""
 
     config: Config = field(default_factory=lambda: DEFAULT_CONFIG)
 
@@ -75,6 +77,7 @@ class InteractionLinearComposite:
     z_mean_: Optional[pd.Series] = field(default=None, init=False)
     z_sd_: Optional[pd.Series] = field(default=None, init=False)
     best_params_: Optional[dict] = field(default=None, init=False)
+    best_inner_cv_row_: Optional[dict] = field(default=None, init=False)
 
     # ------------------------------------------------------------------
     # Standardisation + design
@@ -125,8 +128,17 @@ class InteractionLinearComposite:
         return Delta[:, 1:]
 
     def _fit_en(self, Delta: np.ndarray, *, alpha: float, l1_ratio: float) -> np.ndarray:
-        """Fit ElasticNet direction on paired design deltas."""
+        """Fit a regularised direction on paired design deltas."""
         y = np.ones(Delta.shape[0], dtype=float)
+        if float(l1_ratio) <= self.config.interaction_eps:
+            model = Ridge(
+                alpha=float(alpha),
+                fit_intercept=False,
+                random_state=self.config.random_state,
+            )
+            model.fit(Delta, y)
+            w_eff = model.coef_.astype(float, copy=False)
+            return np.concatenate([[0.0], w_eff])
         model = ElasticNet(
             alpha=float(alpha),
             l1_ratio=float(l1_ratio),
@@ -219,6 +231,7 @@ class InteractionLinearComposite:
         if not candidates:
             return float(cfg.interaction_en_alpha), float(cfg.interaction_en_l1_ratio)
         choice = select_hierarchical_candidate(pd.DataFrame(candidates))
+        self.best_inner_cv_row_ = choice.to_dict()
         return float(choice["alpha"]), float(choice["l1_ratio"])
 
     # ------------------------------------------------------------------

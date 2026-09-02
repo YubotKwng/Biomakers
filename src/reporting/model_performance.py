@@ -162,6 +162,7 @@ def assemble_performance_rows(
     clinical_validity: pd.DataFrame | None = None,
     specificity: pd.DataFrame | None = None,
     stability: pd.DataFrame | None = None,
+    validation_test: pd.DataFrame | None = None,
     source: str = "notebook",
     cv_mode: str | None = None,
 ) -> pd.DataFrame:
@@ -189,7 +190,8 @@ def assemble_performance_rows(
             "cv_mode": cv_mode,
             "source": source,
         })
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    return attach_validation_test_columns(out, validation_test)
 
 
 def append_log_model_summaries(performance: pd.DataFrame, log_models: pd.DataFrame) -> pd.DataFrame:
@@ -250,20 +252,124 @@ def append_log_model_summaries(performance: pd.DataFrame, log_models: pd.DataFra
                 "n": n,
                 "status": status,
                 "evidence": evidence,
+                "validation_score": _log_validation_score(row, spec["question"]),
+                "test_score": _log_test_score(row, spec["question"], value),
+                "validation_minus_test": np.nan,
+                "overfit_check": "",
                 "cv_mode": row.get("cv_mode", np.nan),
                 "source": row.get("source_log", np.nan),
             })
     if not rows:
         return performance
-    return pd.concat([performance, pd.DataFrame(rows)], ignore_index=True, sort=False)
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out["validation_minus_test"] = pd.to_numeric(
+            out["validation_score"],
+            errors="coerce",
+        ) - pd.to_numeric(out["test_score"], errors="coerce")
+        out["overfit_check"] = out["validation_minus_test"].map(_overfit_label)
+    return pd.concat([performance, out], ignore_index=True, sort=False)
 
 
-def save_one_performance_csv(performance: pd.DataFrame, path: str | Path) -> Path:
-    """Save the single consolidated performance CSV."""
-    out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    performance.to_csv(out, index=False)
-    return out
+def validation_test_gap_table(
+    model_name: str,
+    *,
+    test_intervals: pd.DataFrame | None = None,
+    chosen_params: pd.DataFrame | None = None,
+    log_row: pd.Series | dict | None = None,
+    overfit_threshold: float = 0.15,
+) -> pd.DataFrame:
+    """Summarise validation-vs-test d_z evidence for overfit review.
+
+    ``chosen_params`` should contain inner-CV values selected inside each outer
+    fold. ``test_intervals`` should contain the outer held-out/OOF interval
+    results. When only a log row is available, the helper reports the pooled
+    annual validation-vs-test comparison from that row.
+    """
+    rows: list[dict] = []
+    chosen = chosen_params if chosen_params is not None else pd.DataFrame()
+    tests = test_intervals if test_intervals is not None else pd.DataFrame()
+    log = dict(log_row) if log_row is not None else {}
+
+    def add(question: str, metric: str, validation, test, source: str) -> None:
+        val = _as_float(validation)
+        tst = _as_float(test)
+        gap = val - tst if np.isfinite(val) and np.isfinite(tst) else np.nan
+        rows.append({
+            "model": model_name,
+            "question": question,
+            "metric": metric,
+            "validation_score": val,
+            "test_score": tst,
+            "validation_minus_test": gap,
+            "overfit_check": _overfit_label(gap, threshold=overfit_threshold),
+            "evidence": source,
+        })
+
+    add(
+        "12-month sensitivity V1->V2",
+        "validation d_z vs held-out/test d_z",
+        _mean_col(chosen, "inner_dz_v1_v2"),
+        _test_interval_value(tests, "V1->V2"),
+        "inner grouped CV compared with outer held-out interval score",
+    )
+    add(
+        "12-month sensitivity V2->V3",
+        "validation d_z vs held-out/test d_z",
+        _mean_col(chosen, "inner_dz_v2_v3"),
+        _test_interval_value(tests, "V2->V3"),
+        "inner grouped CV compared with outer held-out interval score",
+    )
+    add(
+        "12-month pooled annual sensitivity",
+        "validation mean annual d_z vs held-out/test d_z",
+        _first_finite(
+            _mean_col(chosen, "inner_d_score"),
+            _mean_col(chosen, "inner_score"),
+            log.get("mean_validation_annual_dz", np.nan),
+            log.get("mean_validation_dz", np.nan),
+        ),
+        _first_finite(
+            _test_interval_value(tests, "V1->V2 + V2->V3"),
+            log.get("d_score", np.nan),
+        ),
+        "inner grouped CV compared with outer held-out pooled annual score",
+    )
+
+    out = pd.DataFrame(rows)
+    return out.dropna(subset=["validation_score", "test_score"], how="all").reset_index(drop=True)
+
+
+def attach_validation_test_columns(
+    performance: pd.DataFrame,
+    validation_test: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Attach validation/test overfit-review columns to performance rows."""
+    out = performance.copy()
+    for col in ["validation_score", "test_score", "validation_minus_test", "overfit_check"]:
+        if col not in out.columns:
+            out[col] = np.nan if col != "overfit_check" else ""
+    if validation_test is None or validation_test.empty:
+        return out
+    keep = [
+        "model",
+        "question",
+        "validation_score",
+        "test_score",
+        "validation_minus_test",
+        "overfit_check",
+    ]
+    vt = validation_test[[c for c in keep if c in validation_test.columns]].copy()
+    merged = out.drop(columns=[c for c in keep[2:] if c in out.columns]).merge(
+        vt,
+        on=["model", "question"],
+        how="left",
+    )
+    for col in keep[2:]:
+        if col not in merged.columns:
+            merged[col] = np.nan if col != "overfit_check" else ""
+    merged["overfit_check"] = merged["overfit_check"].fillna("")
+    return merged
 
 
 def _interval_row(table: pd.DataFrame | None, interval: str) -> pd.Series | None:
@@ -277,6 +383,29 @@ def _interval_row(table: pd.DataFrame | None, interval: str) -> pd.Series | None
 
 def _availability_status(value) -> str:
     return "available_from_existing_log" if pd.notna(value) else "not_available_in_existing_log"
+
+
+def _log_validation_score(row, question: str):
+    if question == "12-month pooled annual sensitivity":
+        return _first_finite(
+            row.get("mean_validation_annual_dz", np.nan),
+            row.get("mean_validation_dz", np.nan),
+            row.get("inner_d_score", np.nan),
+            row.get("inner_score", np.nan),
+        )
+    return np.nan
+
+
+def _log_test_score(row, question: str, value):
+    if question == "12-month sensitivity V1->V2":
+        return row.get("dz_v1_v2", np.nan)
+    if question == "12-month sensitivity V2->V3":
+        return row.get("dz_v2_v3", np.nan)
+    if question == "12-month pooled annual sensitivity":
+        return row.get("d_score", np.nan)
+    if question == "24-month cumulative sensitivity":
+        return row.get("dz_v1_v3", np.nan)
+    return np.nan
 
 
 def _best_abs(
@@ -417,6 +546,47 @@ def _maybe(row, col):
     return row.get(col, np.nan)
 
 
+def _as_float(value) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    return out if np.isfinite(out) else np.nan
+
+
+def _mean_col(frame: pd.DataFrame, col: str) -> float:
+    if frame is None or frame.empty or col not in frame.columns:
+        return np.nan
+    vals = pd.to_numeric(frame[col], errors="coerce")
+    return float(vals.mean()) if vals.notna().any() else np.nan
+
+
+def _first_finite(*values) -> float:
+    for value in values:
+        out = _as_float(value)
+        if np.isfinite(out):
+            return out
+    return np.nan
+
+
+def _test_interval_value(frame: pd.DataFrame, interval: str) -> float:
+    row = _interval_row(frame, interval)
+    if row is None:
+        return np.nan
+    return _first_finite(row.get("d_z", np.nan), row.get("value", np.nan))
+
+
+def _overfit_label(gap, threshold: float = 0.15) -> str:
+    value = _as_float(gap)
+    if not np.isfinite(value):
+        return ""
+    if value > threshold:
+        return "possible_overfit"
+    if value < -threshold:
+        return "test_exceeds_validation"
+    return "aligned"
+
+
 def _format_effect_value(row) -> str:
     return (
         f"{row.get('d_z', np.nan)} "
@@ -436,7 +606,8 @@ __all__ = [
     "CANONICAL_PAIR_COUNTS",
     "append_log_model_summaries",
     "assemble_performance_rows",
+    "attach_validation_test_columns",
     "best_model_rows_from_logs",
     "cv_contract_table",
-    "save_one_performance_csv",
+    "validation_test_gap_table",
 ]

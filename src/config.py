@@ -128,8 +128,9 @@ class Config:
     # ------------------------------------------------------------------
     # Interaction-term composite for patient-adaptive weighting.
     # Modulators enter the design ONLY as multiplicative interaction terms
-    # with imaging features (no raw main effects, by construction). Fit is
-    # sparse ElasticNet on paired differences (Δdesign → 1).
+    # with imaging features (no raw main effects, by construction). Fit is a
+    # regularised linear model on paired differences (Δdesign → 1). Use
+    # l1_ratio=0 for dense ridge-style fitting after upstream feature selection.
     # ------------------------------------------------------------------
     modulators: list[str] = field(
         default_factory=lambda: ["GAA1", "age_at_onset", "dur"]
@@ -138,11 +139,11 @@ class Config:
         default_factory=lambda: ["CSA_C1", "CSA_C2", "ECC_C1", "ECC_C2"]
     )
     interaction_en_alpha: float = 0.3       # ElasticNet alpha (λ) for Δdesign fit
-    interaction_en_l1_ratio: float = 0.8    # ElasticNet l1_ratio (1.0=Lasso)
+    interaction_en_l1_ratio: float = 0.0    # 0.0=dense ridge-style; 1.0=Lasso
     interaction_en_alpha_grid: tuple[float, ...] = (
         0.01, 0.03, 0.1, 0.3, 0.7, 1.0, 1.3, 1.7, 2.0
     )
-    interaction_en_l1_ratio_grid: tuple[float, ...] = (0.2, 0.5, 0.8, 1.0)
+    interaction_en_l1_ratio_grid: tuple[float, ...] = (0.0,)
     interaction_tune_inner_cv: bool = True
     interaction_inner_cv_splits: int = 5
     interaction_z_clip: float | None = None  # Optional clipping after fold-local standardisation.
