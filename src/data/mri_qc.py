@@ -79,6 +79,10 @@ def site_effect_screen(
 
         design_cols = [feature, site_col, *covariates]
         tmp = tmp[design_cols].dropna()
+        # Site identifiers are labels even when source files encode them as
+        # integers. Force categorical treatment so the nested-model test uses
+        # one degree of freedom per non-reference site.
+        tmp[site_col] = tmp[site_col].astype("string").astype("category")
         y = pd.to_numeric(tmp[feature], errors="coerce").to_numpy(dtype=float)
         ok = np.isfinite(y)
         tmp = tmp.loc[ok].copy()

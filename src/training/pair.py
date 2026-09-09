@@ -70,6 +70,46 @@ def prepare_pair_arrays(
     return X1, X2, np.array(sids), F1, F2, S1, S2
 
 
+def score_pair_progression(
+    model,
+    df,
+    feature_cols,
+    scaler,
+    *,
+    subject_col,
+    device,
+    z_clip: float | None = None,
+):
+    """Score complete held-out pairs with a frozen PairModel pipeline.
+
+    This is a scoring-only path, so it may be used for controls. The supplied
+    scaler and model are applied unchanged and no clinical targets are read.
+    """
+    x1_rows, x2_rows, subjects = [], [], []
+    for subject, group in df.groupby(subject_col, sort=False):
+        ordered = group.sort_values("visit")
+        first = ordered.loc[ordered["visit"].eq(1), list(feature_cols)]
+        second = ordered.loc[ordered["visit"].eq(2), list(feature_cols)]
+        if len(first) == 1 and len(second) == 1:
+            x1_rows.append(first.iloc[0].to_numpy(dtype=float))
+            x2_rows.append(second.iloc[0].to_numpy(dtype=float))
+            subjects.append(subject)
+    if not subjects:
+        return np.asarray([], dtype=object), np.asarray([], dtype=float)
+    x1 = scaler.transform(np.vstack(x1_rows))
+    x2 = scaler.transform(np.vstack(x2_rows))
+    if z_clip is not None:
+        clip = float(z_clip)
+        x1 = np.clip(x1, -clip, clip)
+        x2 = np.clip(x2, -clip, clip)
+    x1_tensor = torch.tensor(x1, dtype=torch.float32, device=device)
+    x2_tensor = torch.tensor(x2, dtype=torch.float32, device=device)
+    model.eval()
+    with torch.inference_mode():
+        progression, _, _, _, _ = model(x1_tensor, x2_tensor)
+    return np.asarray(subjects), progression.detach().cpu().numpy().reshape(-1)
+
+
 def train_pair_model(
     train_df,
     feature_cols,
@@ -252,6 +292,7 @@ def _train_pair_for_combo(
 
 __all__ = [
     "prepare_pair_arrays",
+    "score_pair_progression",
     "train_pair_model",
     "_PairProgWrapper",
     "_build_pair_tensors",

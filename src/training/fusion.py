@@ -63,6 +63,34 @@ def prepare_fusion_arrays(
     return arrays
 
 
+def score_fusion_progression(
+    model,
+    df,
+    feature_cols,
+    meta,
+    scaler,
+    *,
+    device,
+    z_clip: float | None = None,
+):
+    """Score visit rows with a frozen FusionModel pipeline.
+
+    Unlike :func:`prepare_fusion_arrays`, this helper is intentionally valid
+    for held-out controls. It never fits preprocessing or model parameters.
+    """
+    X = scaler.transform(df[list(feature_cols)].values)
+    if z_clip is not None:
+        X = np.clip(X, -float(z_clip), float(z_clip))
+    tensors = {
+        name: torch.tensor(X[:, meta[f"{name}_idx"]], dtype=torch.float32, device=device)
+        for name in ("struct", "diff", "back")
+    }
+    model.eval()
+    with torch.inference_mode():
+        _, _, progression = model(tensors["struct"], tensors["diff"], tensors["back"])
+    return progression.detach().cpu().numpy().reshape(-1)
+
+
 def evaluate_fusion_loss(
     model,
     arrays,
@@ -258,6 +286,7 @@ def _train_fusion_for_combo(
 
 __all__ = [
     "prepare_fusion_arrays",
+    "score_fusion_progression",
     "evaluate_fusion_loss",
     "train_fusion_model",
     "_FusionProgWrapper",
